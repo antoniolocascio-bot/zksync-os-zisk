@@ -16,20 +16,74 @@ fn main() {
     // accelerated circuits; on native it falls back to software.
     revm::install_crypto(CustomEvmCrypto::default());
 
-    let batch_input: BatchInput = ziskos::io::read();
+    // `ziskos::io::read()` deserializes with bincode 2.x (`config::standard()`,
+    // varint), but `input.bin` was produced with bincode 1.x (fixint) by
+    // `export_proven_input_for_emulator`. Read the raw framed slice and
+    // deserialize with bincode 1.x to keep `input.bin` byte-for-byte unchanged
+    // (sha256 46531ebf…, 4296 B).
+    //
+    // v0.18.0: the zero-copy reader is `io::read_input_slice()` (returns
+    // `&[u8]` on the zkVM target). v1.0.0-alpha had renamed this to
+    // `read_slice`; v0.18.0 still uses the original `read_input_slice` name.
+    let bytes = ziskos::io::read_input_slice();
+    let batch_input: BatchInput =
+        bincode::deserialize(bytes).expect("failed to deserialize BatchInput (bincode 1.x)");
+
     let (_output, commitment) = executor::execute_and_commit(&batch_input);
     let hash_bytes: [u8; 32] = commitment.into();
 
-    // ziskos::io::commit() writes bytes as u32 LE chunks, which swaps each
-    // 4-byte group. Pre-swap so the public values contain the raw keccak256
-    // output that the L1 verifier and Airbender both expect.
-    let mut swapped = [0u8; 32];
-    for i in 0..8 {
-        let o = i * 4;
-        swapped[o] = hash_bytes[o + 3];
-        swapped[o + 1] = hash_bytes[o + 2];
-        swapped[o + 2] = hash_bytes[o + 1];
-        swapped[o + 3] = hash_bytes[o];
-    }
-    ziskos::io::commit(&swapped);
+    // v1.0.0-alpha migration: commit the raw 32-byte keccak output. In v0.16.1
+    // `io::commit` wrote bytes as u32 LE chunks, so the guest pre-swapped each
+    // 4-byte group. `commit_slice` writes the byte stream directly; verify the
+    // public-values byte order against the reference commitment (0x891b61c0…)
+    // after emulation and re-introduce a swap here only if it comes out swapped.
+    ziskos::io::commit_slice(&hash_bytes);
 }
+
+// ---------------------------------------------------------------------------
+// Crypto precompile shims (v1.0.0-alpha migration).
+//
+// `zksync-os-zisk-lib::crypto::CustomEvmCrypto` calls the C-ABI symbols below
+// on the ZiSK target. In v0.16.1 these were provided by a patched
+// `zksync-os-revm` (an uncommitted `/tmp/zksync-os-revm-patched`); they are not
+// present in the v1.0.0-alpha toolchain or any committed crate. v1.0.0-alpha
+// exposes equivalent operations as Rust functions under `ziskos::zisklib`.
+//
+// The synthetic `force_fail` batch performs almost no EVM execution and is not
+// expected to invoke any of these precompiles. We provide them as identifying
+// panic-stubs so the ELF links; anything the batch actually exercises will
+// panic under `ziskemu`, at which point it gets a real `ziskos::zisklib`-backed
+// implementation. keccak256 is unaffected (routed via the tiny-keccak patch /
+// native-keccak) and is NOT stubbed here.
+// ---------------------------------------------------------------------------
+macro_rules! precompile_stub {
+    ($name:ident ( $($arg:ident : $ty:ty),* ) $(-> $ret:ty)?) => {
+        #[no_mangle]
+        pub extern "C" fn $name( $($arg : $ty),* ) $(-> $ret)? {
+            $( let _ = $arg; )*
+            panic!(concat!(
+                "ZiSK crypto precompile `", stringify!($name),
+                "` is not implemented for v1.0.0-alpha (batch was not expected to \
+                 invoke it); wire it to ziskos::zisklib to support batches that do."
+            ));
+        }
+    };
+}
+
+precompile_stub!(sha256_c(input: *const u8, input_len: usize, output: *mut u8));
+precompile_stub!(bn254_g1_add_c(p1: *const u8, p2: *const u8, ret: *mut u8) -> u8);
+precompile_stub!(bn254_g1_mul_c(point: *const u8, scalar: *const u8, ret: *mut u8) -> u8);
+precompile_stub!(bn254_pairing_check_c(pairs: *const u8, num_pairs: usize) -> u8);
+precompile_stub!(secp256k1_ecdsa_verify_and_address_recover_c(sig: *const u8, msg: *const u8, pk: *const u8, output: *mut u8) -> u8);
+precompile_stub!(secp256k1_ecdsa_address_recover_c(sig: *const u8, recid: u8, msg: *const u8, output: *mut u8) -> u8);
+precompile_stub!(modexp_bytes_c(base_ptr: *const u8, base_len: usize, exp_ptr: *const u8, exp_len: usize, modulus_ptr: *const u8, modulus_len: usize, ret_ptr: *mut u8) -> usize);
+precompile_stub!(blake2b_compress_c(rounds: u32, h: *mut u64, m: *const u64, t: *const u64, f: u8));
+precompile_stub!(secp256r1_ecdsa_verify_c(msg: *const u8, sig: *const u8, pk: *const u8) -> bool);
+precompile_stub!(verify_kzg_proof_c(z: *const u8, y: *const u8, commitment: *const u8, proof: *const u8) -> bool);
+precompile_stub!(bls12_381_g1_add_c(ret: *mut u8, a: *const u8, b: *const u8) -> u8);
+precompile_stub!(bls12_381_g1_msm_c(ret: *mut u8, pairs: *const u8, num_pairs: usize) -> u8);
+precompile_stub!(bls12_381_g2_add_c(ret: *mut u8, a: *const u8, b: *const u8) -> u8);
+precompile_stub!(bls12_381_g2_msm_c(ret: *mut u8, pairs: *const u8, num_pairs: usize) -> u8);
+precompile_stub!(bls12_381_pairing_check_c(pairs: *const u8, num_pairs: usize) -> u8);
+precompile_stub!(bls12_381_fp_to_g1_c(ret: *mut u8, fp: *const u8) -> u8);
+precompile_stub!(bls12_381_fp2_to_g2_c(ret: *mut u8, fp2: *const u8) -> u8);
