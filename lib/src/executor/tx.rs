@@ -55,7 +55,7 @@ mod abi_layout {
 /// - L2: from the RLP-encoded signed bytes (signature-verified via ecrecover)
 ///
 /// Only `gas_used_override` and `force_fail` are taken from TxInput.
-pub(super) fn build_proven_tx(input: &TxInput) -> (ZKsyncTx<TxEnv>, B256) {
+pub(super) fn build_proven_tx(input: &TxInput) -> (ZKsyncTx<TxEnv>, B256, u8) {
     match &input.auth {
         TxAuth::L1 { tx_hash, abi_encoded } | TxAuth::Upgrade { tx_hash, abi_encoded } => {
             build_l1_upgrade_tx(input, tx_hash, abi_encoded)
@@ -71,7 +71,7 @@ fn build_l1_upgrade_tx(
     input: &TxInput,
     tx_hash: &B256,
     abi_encoded: &[u8],
-) -> (ZKsyncTx<TxEnv>, B256) {
+) -> (ZKsyncTx<TxEnv>, B256, u8) {
     // Verify the ABI encoding hashes to the claimed tx_hash.
     let computed = crate::hash::keccak256(abi_encoded);
     assert_eq!(
@@ -128,13 +128,13 @@ fn build_l1_upgrade_tx(
         .build()
         .expect("failed to build ZKsyncTx");
 
-    (tx, *tx_hash)
+    (tx, *tx_hash, tx_type)
 }
 
 /// Build a transaction from EIP-2718 RLP-encoded signed bytes.
 /// All execution fields are decoded from the signed envelope. The signature
 /// is verified via ecrecover to authenticate the caller.
-fn build_l2_tx(input: &TxInput, signed_bytes: &[u8]) -> (ZKsyncTx<TxEnv>, B256) {
+fn build_l2_tx(input: &TxInput, signed_bytes: &[u8]) -> (ZKsyncTx<TxEnv>, B256, u8) {
     use alloy_consensus::transaction::SignerRecoverable;
     use alloy_consensus::TxEnvelope;
     use alloy_eips::Decodable2718;
@@ -189,5 +189,5 @@ fn build_l2_tx(input: &TxInput, signed_bytes: &[u8]) -> (ZKsyncTx<TxEnv>, B256) 
         .build()
         .expect("failed to build ZKsyncTx");
 
-    (tx, tx_hash)
+    (tx, tx_hash, tx_type)
 }

@@ -64,6 +64,20 @@ pub struct BatchMeta {
     /// REVM's output, then checks blake2s(preimage) == tree_update value.
     #[serde(default)]
     pub account_preimages_after: Vec<(Address, Vec<u8>)>,
+    /// Chain-config inputs committed into the batch public input via
+    /// `chain_config_hash` (zksync-os draft-0.4.0 `ChainConfig::hash`).
+    /// `fri_proof_verification_enabled` and `max_tx_gas_limit` are not otherwise
+    /// present in the batch; `chain_id` is taken from `BatchInput::chain_id`.
+    #[serde(default)]
+    pub fri_proof_verification_enabled: bool,
+    #[serde(default = "default_max_tx_gas_limit")]
+    pub max_tx_gas_limit: u64,
+}
+
+/// Behavior-preserving default per EIP-7825 (2^24), matching zksync-os
+/// `DEFAULT_MAX_TX_GAS_LIMIT`, for dumps that predate this field.
+fn default_max_tx_gas_limit() -> u64 {
+    1 << 24
 }
 
 /// Single block input with pre-state and transactions.

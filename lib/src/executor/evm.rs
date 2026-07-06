@@ -9,7 +9,6 @@ use revm::{DatabaseRef, ExecuteCommitEvm};
 use zksync_os_revm::{DefaultZk, ZkBuilder, ZkContext, ZkSpecId};
 
 use crate::block_header;
-use crate::commitment;
 use crate::types::*;
 use super::proven_db::ProvenDB;
 use super::tx::build_proven_tx;
@@ -22,11 +21,14 @@ pub(super) fn execute_block_proven(
     block: &BlockInput,
     cache_db: &mut CacheDB<ProvenDB>,
 ) -> BlockResult {
-    let (tx_results, tx_hashes, computed_l2_to_l1_logs) =
+    let (tx_results, tx_hashes, receipt_hashes, computed_l2_to_l1_logs) =
         run_evm_block(chain_id, spec_id, block, cache_db);
 
     let total_gas_used: u64 = tx_results.iter().map(|t| t.gas_used).sum();
-    let tx_root = commitment::transactions_rolling_hash(&tx_hashes);
+    // transactions_root / receipts_root are Blake2s depth-32 Merkle trees over
+    // the per-tx tx-hash / receipt-hash leaves (zksync-os draft-0.4.0).
+    let tx_root = block_header::block_tx_merkle_root(&tx_hashes);
+    let receipts_root = block_header::block_tx_merkle_root(&receipt_hashes);
 
 
     // Get parent hash from block_hashes (previous block's hash)
@@ -44,6 +46,7 @@ pub(super) fn execute_block_proven(
         &parent_hash,
         &block.coinbase.into_array(),
         &tx_root,
+        &receipts_root,
         block.number,
         block.gas_limit,
         total_gas_used,
@@ -101,7 +104,7 @@ fn run_evm_block<DB: DatabaseRef>(
     spec_id: ZkSpecId,
     block: &BlockInput,
     cache_db: &mut CacheDB<DB>,
-) -> (Vec<TxOutput>, Vec<B256>, Vec<L2ToL1LogEntry>)
+) -> (Vec<TxOutput>, Vec<B256>, Vec<B256>, Vec<L2ToL1LogEntry>)
 where
     DB::Error: core::fmt::Debug,
 {
@@ -123,16 +126,38 @@ where
 
     let mut tx_results = Vec::with_capacity(block.transactions.len());
     let mut tx_hashes = Vec::with_capacity(block.transactions.len());
+    let mut receipt_hashes = Vec::with_capacity(block.transactions.len());
     let mut l2_to_l1_logs = Vec::new();
+    let mut cumulative_gas_used: u64 = 0;
 
     for (tx_idx, tx_input) in block.transactions.iter().enumerate() {
         evm.0.ctx.chain.set_tx_number(tx_idx as u16);
 
-        let (tx, tx_hash) = build_proven_tx(tx_input);
+        let (tx, tx_hash, tx_type) = build_proven_tx(tx_input);
         tx_hashes.push(tx_hash);
 
         match evm.transact_commit(tx) {
             Ok(result) => {
+                // Per-tx receipt-hash leaf for the block's receipts_root.
+                // Cumulative gas uses the executor's reported gas (which honors
+                // gas_used_override), matching the server's block gas accounting.
+                let logs: Vec<block_header::LogEntry> = result
+                    .logs()
+                    .iter()
+                    .map(|l| block_header::LogEntry {
+                        address: l.address.into_array(),
+                        topics: l.data.topics().to_vec(),
+                        data: l.data.data.to_vec(),
+                    })
+                    .collect();
+                cumulative_gas_used += result.gas_used();
+                receipt_hashes.push(block_header::receipt_hash(
+                    tx_type,
+                    result.is_success(),
+                    cumulative_gas_used,
+                    &logs,
+                ));
+
                 for log in evm.0.ctx.chain.take_logs() {
                     l2_to_l1_logs.push(L2ToL1LogEntry {
                         l2_shard_id: log.l2_shard_id,
@@ -153,5 +178,5 @@ where
         }
     }
 
-    (tx_results, tx_hashes, l2_to_l1_logs)
+    (tx_results, tx_hashes, receipt_hashes, l2_to_l1_logs)
 }

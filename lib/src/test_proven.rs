@@ -161,6 +161,8 @@ mod tests {
                 sl_chain_id: 0, blob_versioned_hashes: vec![],
                 tree_update: None,
                 account_preimages_after: vec![],
+                fri_proof_verification_enabled: false,
+                max_tx_gas_limit: 1 << 24,
             },
             blocks: vec![BlockInput {
                 number: 1,
@@ -280,6 +282,8 @@ mod tests {
                 sl_chain_id: 0, blob_versioned_hashes: vec![],
                 tree_update: None,
                 account_preimages_after: vec![],
+                fri_proof_verification_enabled: false,
+                max_tx_gas_limit: 1 << 24,
             },
             blocks: vec![BlockInput {
                 number: 1,
@@ -392,6 +396,8 @@ mod tests {
                 sl_chain_id: 0, blob_versioned_hashes: vec![],
                 tree_update: None,
                 account_preimages_after: vec![],
+                fri_proof_verification_enabled: false,
+                max_tx_gas_limit: 1 << 24,
             },
             blocks: vec![BlockInput {
                 number: 1,

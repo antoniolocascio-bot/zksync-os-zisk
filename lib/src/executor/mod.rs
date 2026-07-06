@@ -133,37 +133,34 @@ fn execute_and_commit_inner(input: &BatchInput) -> (BatchOutput, B256, B256, B25
         _ => panic!("unsupported DA commitment scheme: {}", meta.da_commitment_scheme),
     };
 
-    let batch_hash = if input.protocol_version_minor >= 31 {
-        commitment::batch_output_hash_v31(
-            input.chain_id,
-            input.blocks.first().unwrap().timestamp,
-            last_block.timestamp,
-            meta.da_commitment_scheme,
-            &da_commitment,
-            num_l1_txs,
-            num_l2_txs,
-            &priority_ops_hash,
-            &l2_logs_root_hash,
-            &meta.upgrade_tx_hash,
-            &B256::ZERO,
-            meta.sl_chain_id,
-        )
-    } else {
-        commitment::batch_output_hash_v30(
-            input.chain_id,
-            input.blocks.first().unwrap().timestamp,
-            last_block.timestamp,
-            meta.da_commitment_scheme,
-            &da_commitment,
-            num_l1_txs,
-            &priority_ops_hash,
-            &l2_logs_root_hash,
-            &meta.upgrade_tx_hash,
-            &B256::ZERO,
-        )
-    };
+    // Batch output hash — matches zksync-os draft-0.4.0 `BatchOutput::hash`
+    // (single canonical layout; the old v30/v31 chain_id-prefixed variants were stale).
+    let batch_hash = commitment::batch_output_hash_native(
+        input.blocks.first().unwrap().timestamp,
+        last_block.timestamp,
+        meta.da_commitment_scheme,
+        &da_commitment,
+        num_l1_txs,
+        num_l2_txs,
+        &priority_ops_hash,
+        &l2_logs_root_hash,
+        &meta.upgrade_tx_hash,
+        &B256::ZERO, // interop_roots_rolling_hash (0 in this batch)
+        meta.sl_chain_id,
+    );
 
-    let commitment = commitment::batch_public_input_hash(&state_before, &state_after, &batch_hash);
+    // Top-level PI commits to the chain config (draft-0.4.0 `BatchPublicInput::hash`).
+    let chain_config_hash = commitment::chain_config_hash(
+        input.chain_id,
+        meta.fri_proof_verification_enabled,
+        meta.max_tx_gas_limit,
+    );
+    let commitment = commitment::batch_public_input_hash(
+        &state_before,
+        &state_after,
+        &chain_config_hash,
+        &batch_hash,
+    );
     (output, commitment, state_before, state_after, batch_hash)
 }
 

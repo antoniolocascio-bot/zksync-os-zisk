@@ -106,39 +106,23 @@ pub fn l2_to_l1_logs_root(encoded_logs: &[[u8; L2_TO_L1_LOG_SIZE]]) -> B256 {
 // Batch output hash
 // ---------------------------------------------------------------------------
 
-/// Compute the batch output hash (protocol v30).
-pub fn batch_output_hash_v30(
-    chain_id: u64,
-    first_block_timestamp: u64,
-    last_block_timestamp: u64,
-    da_commitment_scheme: u8,
-    da_commitment: &B256,
-    number_of_layer1_txs: u64,
-    priority_operations_hash: &B256,
-    l2_to_l1_logs_root_hash: &B256,
-    upgrade_tx_hash: &B256,
-    dependency_roots_rolling_hash: &B256,
-) -> B256 {
-    let mut data = Vec::with_capacity(320);
-    data.extend_from_slice(&[0u8; 24]);
-    data.extend_from_slice(&chain_id.to_be_bytes());
-    data.extend_from_slice(&first_block_timestamp.to_be_bytes());
-    data.extend_from_slice(&last_block_timestamp.to_be_bytes());
-    data.extend_from_slice(&[0u8; 31]);
-    data.push(da_commitment_scheme);
-    data.extend_from_slice(da_commitment.as_slice());
-    data.extend_from_slice(&[0u8; 24]);
-    data.extend_from_slice(&number_of_layer1_txs.to_be_bytes());
-    data.extend_from_slice(priority_operations_hash.as_slice());
-    data.extend_from_slice(l2_to_l1_logs_root_hash.as_slice());
-    data.extend_from_slice(upgrade_tx_hash.as_slice());
-    data.extend_from_slice(dependency_roots_rolling_hash.as_slice());
-    keccak256(&data)
-}
-
-/// Compute the batch output hash (protocol v31+).
-pub fn batch_output_hash_v31(
-    chain_id: u64,
+/// Compute the batch output hash, matching zksync-os draft-0.4.0
+/// `BatchOutput::hash` (basic_bootloader .../zk/post_tx_op/public_input.rs)
+/// BYTE-FOR-BYTE. Encoding, in order:
+///   first_block_timestamp (u64 BE, 8 bytes)
+///   last_block_timestamp  (u64 BE, 8 bytes)
+///   [0u8;31] || da_commitment_scheme    (32 bytes)
+///   pubdata_commitment / da_commitment  (32 bytes)
+///   number_of_layer_1_txs (U256 BE, 32 bytes)
+///   number_of_layer_2_txs (U256 BE, 32 bytes)
+///   priority_operations_hash            (32 bytes)
+///   l2_logs_tree_root                   (32 bytes)
+///   upgrade_tx_hash                     (32 bytes)
+///   interop_roots_rolling_hash          (32 bytes)
+///   settlement_layer_chain_id (U256 BE, 32 bytes)
+/// Note: there is NO chain_id word (the stale v30/v31 variants prepended one).
+#[allow(clippy::too_many_arguments)]
+pub fn batch_output_hash_native(
     first_block_timestamp: u64,
     last_block_timestamp: u64,
     da_commitment_scheme: u8,
@@ -148,27 +132,47 @@ pub fn batch_output_hash_v31(
     priority_operations_hash: &B256,
     l2_to_l1_logs_root_hash: &B256,
     upgrade_tx_hash: &B256,
-    dependency_roots_rolling_hash: &B256,
-    sl_chain_id: u64,
+    interop_roots_rolling_hash: &B256,
+    settlement_layer_chain_id: u64,
 ) -> B256 {
-    let mut data = Vec::with_capacity(384);
-    data.extend_from_slice(&[0u8; 24]);
-    data.extend_from_slice(&chain_id.to_be_bytes());
+    let mut data = Vec::with_capacity(304);
     data.extend_from_slice(&first_block_timestamp.to_be_bytes());
     data.extend_from_slice(&last_block_timestamp.to_be_bytes());
     data.extend_from_slice(&[0u8; 31]);
     data.push(da_commitment_scheme);
     data.extend_from_slice(da_commitment.as_slice());
+    // number_of_layer_1_txs as U256 BE (24 zero bytes + u64 BE)
     data.extend_from_slice(&[0u8; 24]);
     data.extend_from_slice(&number_of_layer1_txs.to_be_bytes());
+    // number_of_layer_2_txs as U256 BE
     data.extend_from_slice(&[0u8; 24]);
     data.extend_from_slice(&number_of_layer2_txs.to_be_bytes());
     data.extend_from_slice(priority_operations_hash.as_slice());
     data.extend_from_slice(l2_to_l1_logs_root_hash.as_slice());
     data.extend_from_slice(upgrade_tx_hash.as_slice());
-    data.extend_from_slice(dependency_roots_rolling_hash.as_slice());
+    data.extend_from_slice(interop_roots_rolling_hash.as_slice());
+    // settlement_layer_chain_id as U256 BE
     data.extend_from_slice(&[0u8; 24]);
-    data.extend_from_slice(&sl_chain_id.to_be_bytes());
+    data.extend_from_slice(&settlement_layer_chain_id.to_be_bytes());
+    keccak256(&data)
+}
+
+/// Canonical keccak256 commitment to the chain config, matching zksync-os
+/// draft-0.4.0 `ChainConfig::hash` (zk_ee .../metadata/chain_config.rs):
+///   chain_id (uint256 BE), fri_proof_verification_enabled (32-byte word,
+///   last byte 0/1), max_tx_gas_limit (u64 BE, right-aligned in a 32-byte word).
+pub fn chain_config_hash(
+    chain_id: u64,
+    fri_proof_verification_enabled: bool,
+    max_tx_gas_limit: u64,
+) -> B256 {
+    let mut data = [0u8; 96];
+    // chain_id as U256 BE
+    data[24..32].copy_from_slice(&chain_id.to_be_bytes());
+    // fri word: last byte 0/1
+    data[63] = u8::from(fri_proof_verification_enabled);
+    // max_tx_gas_limit right-aligned in the third 32-byte word
+    data[88..96].copy_from_slice(&max_tx_gas_limit.to_be_bytes());
     keccak256(&data)
 }
 
@@ -214,17 +218,20 @@ pub fn transactions_rolling_hash(tx_hashes: &[B256]) -> B256 {
     hash
 }
 
-/// Full batch public input hash:
-/// Keccak256(state_before || state_after || batch_output_hash)
+/// Full batch public input hash, matching zksync-os draft-0.4.0
+/// `BatchPublicInput::hash` (basic_bootloader .../zk/post_tx_op/public_input.rs):
+/// Keccak256(state_before || state_after || chain_config_hash || batch_output_hash)
 pub fn batch_public_input_hash(
     state_before: &B256,
     state_after: &B256,
+    chain_config_hash: &B256,
     batch_output_hash: &B256,
 ) -> B256 {
-    let mut data = [0u8; 96];
+    let mut data = [0u8; 128];
     data[..32].copy_from_slice(state_before.as_slice());
     data[32..64].copy_from_slice(state_after.as_slice());
-    data[64..96].copy_from_slice(batch_output_hash.as_slice());
+    data[64..96].copy_from_slice(chain_config_hash.as_slice());
+    data[96..128].copy_from_slice(batch_output_hash.as_slice());
     keccak256(&data)
 }
 
