@@ -32,14 +32,19 @@ struct Args {
     #[arg(long)]
     proving_key: PathBuf,
 
-    /// Path to the ZiSK SNARK proving key directory.
-    #[arg(long)]
-    proving_key_snark: PathBuf,
+    /// Path to the ZiSK PLONK proving key directory (cargo-zisk `-w`).
+    #[arg(long, alias = "proving-key-snark")]
+    proving_key_plonk: PathBuf,
 
-    /// Optional separate cargo-zisk binary for SNARK wrapping.
-    /// Use the CPU build if the GPU binary segfaults during prove-snark.
+    /// Disable GPU proving (cargo-zisk runs CPU-only).
     #[arg(long)]
-    snark_binary: Option<PathBuf>,
+    no_gpu: bool,
+
+    /// Use the ASM emulator for witness generation instead of the standard
+    /// emulator (`-l`). Faster, but requires a high memlock ulimit that is
+    /// often unavailable in containers.
+    #[arg(long)]
+    asm_emulator: bool,
 
     /// Directory for intermediate proof files.
     #[arg(long, default_value = "/tmp/zisk_proofs")]
@@ -121,7 +126,7 @@ async fn main() -> anyhow::Result<()> {
         ("zisk_binary", &args.zisk_binary),
         ("elf_path", &args.elf_path),
         ("proving_key", &args.proving_key),
-        ("proving_key_snark", &args.proving_key_snark),
+        ("proving_key_plonk", &args.proving_key_plonk),
     ] {
         anyhow::ensure!(path.exists(), "{name} does not exist: {}", path.display());
     }
@@ -135,16 +140,15 @@ async fn main() -> anyhow::Result<()> {
     let client = sequencer_client::SequencerClient::new(&args.sequencer_url, "zisk_prover")?;
     tracing::info!(url = client.url(), "connected to sequencer");
 
-    let mut prover = prover::ZiskProver::new(
+    let prover = prover::ZiskProver::new(
         args.zisk_binary,
         args.elf_path,
         args.proving_key,
-        args.proving_key_snark,
+        args.proving_key_plonk,
         args.work_dir,
+        !args.no_gpu,
+        args.asm_emulator,
     );
-    if let Some(snark_bin) = args.snark_binary {
-        prover = prover.with_snark_binary(snark_bin);
-    }
 
     let poll_interval = Duration::from_secs(args.poll_interval_secs);
     let mut proofs_generated: u64 = 0;
@@ -162,6 +166,12 @@ async fn main() -> anyhow::Result<()> {
         }
         cancel_clone.cancel();
     });
+
+    // One-time ROM setup for the guest ELF (idempotent, cheap when cached).
+    if !prover.ensure_program_setup(&cancel).await? {
+        tracing::info!("cancelled during program-setup, exiting");
+        return Ok(());
+    }
 
     loop {
         if cancel.is_cancelled() {

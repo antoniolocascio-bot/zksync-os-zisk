@@ -31,17 +31,13 @@ pub struct ZiskProverMetrics {
     #[metrics(buckets = LATENCY_BUCKETS)]
     pub http_latency: Family<Method, Histogram<Duration>>,
 
-    /// Total proof generation time (STARK + SNARK).
+    /// Total proof generation time (input write + prove + parse).
     #[metrics(buckets = PROOF_TIME_BUCKETS)]
     pub proof_generation_time: Histogram<Duration>,
 
-    /// STARK aggregation time.
+    /// `cargo-zisk prove` subprocess time (integrated STARK + PLONK wrap).
     #[metrics(buckets = PROOF_TIME_BUCKETS)]
-    pub stark_time: Histogram<Duration>,
-
-    /// SNARK wrapping time.
-    #[metrics(buckets = PROOF_TIME_BUCKETS)]
-    pub snark_time: Histogram<Duration>,
+    pub prove_time: Histogram<Duration>,
 }
 
 #[vise::register]

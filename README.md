@@ -24,19 +24,20 @@ Sequencer (zksync-os-server)
 
 ### Proof Pipeline
 
-For each batch, the prover runs two `cargo-zisk` subprocesses sequentially:
+At startup the service runs a one-time `cargo-zisk program-setup` for the guest ELF (ROM setup; cheap when already cached). For each batch it then runs a single integrated `cargo-zisk prove --plonk` subprocess (ZiSK v0.18.0) that:
 
-1. **STARK aggregation** (`cargo-zisk prove`): Executes the ZiSK guest ELF, generates per-AIR FRI proofs, aggregates into a vadcop final proof. ~20 min on GPU.
-2. **SNARK wrapping** (`cargo-zisk prove-snark`): Wraps the STARK proof into a Plonk SNARK suitable for on-chain verification. ~3 min on GPU.
+1. Executes the ZiSK guest ELF and generates + aggregates per-AIR proofs into a verified vadcop final proof.
+2. Wraps it into a BN254 Plonk SNARK suitable for on-chain verification.
 
-Both stages use GPU acceleration when `cargo-zisk` is built with GPU support.
+The output file is parsed into the 768-byte SNARK proof and the 256-byte public values (`program VK ‖ publics ‖ vadcop-final VK`) the sequencer expects. On an RTX 5090, proving runs from ~12 s (small batch) to ~80 s (1000-transfer batch), dominated by the STARK phase; the Plonk wrap is ~5–7 s and batch-size independent. GPU acceleration is used when started with GPU enabled (default).
 
 ## Prerequisites
 
-- **ZiSK toolchain**: `cargo-zisk` in PATH ([install](https://github.com/0xPolygonHermez/zisk))
+- **ZiSK toolchain v0.18.0**: `cargo-zisk` in PATH ([install](https://github.com/0xPolygonHermez/zisk))
 - **ZiSK guest ELF**: Built from `zksync-os-zisk/guest/` via `cargo-zisk build --release`
-- **STARK proving key**: `~/.zisk/provingKey/` (via `ziskup setup`)
-- **SNARK proving key**: `~/.zisk/provingKeySnark/` (via `ziskup setup_snark`)
+- **STARK proving key**: `~/.zisk/provingKey/` (via `ziskup`)
+- **PLONK proving key**: `~/.zisk/provingKeySnark/` (via `ziskup setup_snark`)
+- **libgmp-dev**: required by `program-setup`'s assembly RomSetup (`-lgmp`/`-lgmpxx`)
 - **GPU**: NVIDIA with 16GB+ VRAM (CUDA required for GPU mode)
 
 ## Usage
@@ -56,7 +57,7 @@ cargo run --release -- \
   --zisk-binary ~/.zisk/bin/cargo-zisk \
   --elf-path /path/to/zksync-os-zisk-guest \
   --proving-key ~/.zisk/provingKey \
-  --proving-key-snark ~/.zisk/provingKeySnark
+  --proving-key-plonk ~/.zisk/provingKeySnark
 ```
 
 ### With authentication
@@ -67,7 +68,7 @@ cargo run --release -- \
   --zisk-binary ~/.zisk/bin/cargo-zisk \
   --elf-path /path/to/zksync-os-zisk-guest \
   --proving-key ~/.zisk/provingKey \
-  --proving-key-snark ~/.zisk/provingKeySnark
+  --proving-key-plonk ~/.zisk/provingKeySnark
 ```
 
 ### With VK hash filtering
@@ -80,7 +81,7 @@ cargo run --release -- \
   --zisk-binary ~/.zisk/bin/cargo-zisk \
   --elf-path /path/to/zksync-os-zisk-guest \
   --proving-key ~/.zisk/provingKey \
-  --proving-key-snark ~/.zisk/provingKeySnark \
+  --proving-key-plonk ~/.zisk/provingKeySnark \
   --supported-vk 0x21a582e2fb44e0732b565ffe36331ffb77a315870076b1dc1556579bbc4a67b2
 ```
 
@@ -100,7 +101,9 @@ cargo run --release -- \
 | `--zisk-binary` | required | Path to `cargo-zisk` binary. |
 | `--elf-path` | required | Path to ZiSK guest ELF. |
 | `--proving-key` | required | STARK proving key directory. |
-| `--proving-key-snark` | required | SNARK proving key directory. |
+| `--proving-key-plonk` | required | PLONK proving key directory (alias: `--proving-key-snark`). |
+| `--no-gpu` | (off) | Run `cargo-zisk` CPU-only. |
+| `--asm-emulator` | (off) | Use the ASM emulator for witness generation (faster; needs a high memlock ulimit). Default is the standard emulator. |
 | `--work-dir` | `/tmp/zisk_proofs` | Intermediate proof files (cleaned after each proof). |
 | `--poll-interval-secs` | `5` | Seconds between polls when no work available. |
 | `--iterations` | `0` | Exit after N proofs (0 = unlimited). |
@@ -115,9 +118,8 @@ Prometheus metrics are served at `--metrics-address` (default `:3313`):
 | Metric | Type | Description |
 |--------|------|-------------|
 | `zisk_prover_http_latency` | Histogram | HTTP pick/submit latency |
-| `zisk_prover_proof_generation_time` | Histogram | Total proof time (STARK + SNARK) |
-| `zisk_prover_stark_time` | Histogram | STARK aggregation time |
-| `zisk_prover_snark_time` | Histogram | SNARK wrapping time |
+| `zisk_prover_proof_generation_time` | Histogram | Total proof time per batch |
+| `zisk_prover_prove_time` | Histogram | `cargo-zisk prove` subprocess time (STARK + PLONK wrap) |
 
 ## License
 
