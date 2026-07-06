@@ -240,6 +240,28 @@ mod tests {
             siblings,
         });
 
+        // Build a proper ABI-encoded L2CanonicalTransaction so the batch actually
+        // executes. (The previous dummy 11-byte abi_encoded panicked in tx.rs's ABI
+        // decoder — it was not a runnable batch.) Mirrors the force_fail path in
+        // test_proven_path_with_real_merkle_proofs.
+        let l1_abi = {
+            let mut abi = vec![0u8; 32 + 19 * 32 + 5 * 32];
+            abi[31] = 0x20; // outer offset
+            abi[32 + 31] = 0x7f; // txType
+            abi[32 + 32 + 12..32 + 32 + 32].copy_from_slice(sender.as_slice()); // from
+            abi[32 + 64 + 12..32 + 64 + 32].copy_from_slice(recipient.as_slice()); // to
+            abi[32 + 96 + 24..32 + 96 + 32].copy_from_slice(&21_000u64.to_be_bytes()); // gasLimit
+            abi[32 + 160 + 16..32 + 160 + 32].copy_from_slice(&250_000_000u128.to_be_bytes()); // maxFeePerGas
+            abi[32 + 352 + 12..32 + 352 + 32].copy_from_slice(sender.as_slice()); // reserved[1]=refund
+            let dyn_base = 19u32 * 32;
+            for j in 0..5u32 {
+                let off = 32 + (14 + j as usize) * 32;
+                abi[off + 28..off + 32].copy_from_slice(&(dyn_base + j * 32).to_be_bytes());
+            }
+            abi
+        };
+        let l1_tx_hash = alloy_primitives::keccak256(&l1_abi);
+
         let batch_input = BatchInput {
             chain_id: 270,
             spec_id: 1,
@@ -264,22 +286,26 @@ mod tests {
                 timestamp: 1700000000,
                 base_fee: 250_000_000,
                 gas_limit: 80_000_000,
-                coinbase: Address::ZERO,
+                coinbase: sender, // coinbase = sender so no extra account proof is needed
                 prev_randao: B256::from([1u8; 32]),
                 block_header_hash: B256::ZERO,
                 storage_proofs: vec![(sender_flat_key, proof)],
                 account_preimages: vec![(sender, sender_props)],
                 transactions: vec![TxInput {
                     chain_id: Some(270),
-                    gas_used_override: None,
-                    force_fail: false,
-                    auth: TxAuth::L1 {
-                        tx_hash: alloy_primitives::keccak256(b"dummy-l1-tx"),
-                        abi_encoded: b"dummy-l1-tx".to_vec(),
-                    },
+                    gas_used_override: Some(0),
+                    force_fail: true,
+                    auth: TxAuth::L1 { tx_hash: l1_tx_hash, abi_encoded: l1_abi.clone() },
                 }],
                 block_hashes: vec![],
-                l2_to_l1_logs: vec![],
+                l2_to_l1_logs: vec![L2ToL1LogEntry {
+                    l2_shard_id: 0,
+                    is_service: true,
+                    tx_number_in_block: 0,
+                    sender: "0x0000000000000000000000000000000000008001".parse().unwrap(),
+                    key: l1_tx_hash,
+                    value: B256::ZERO,
+                }],
                 expected_tree_root: B256::ZERO,
             }],
             bytecodes: vec![],
@@ -297,6 +323,18 @@ mod tests {
 
         std::fs::write("/tmp/proven_input.bin", &buf).unwrap();
         println!("Wrote proven input to /tmp/proven_input.bin ({} bytes)", buf.len());
+    }
+
+    /// Compute the native reference commitment for the exact bytes in
+    /// /tmp/proven_input.bin — the value the ZiSK guest must reproduce.
+    #[test]
+    #[ignore = "manual helper: run export_proven_input_for_emulator first"]
+    fn print_input_bin_commitment() {
+        let data = std::fs::read("/tmp/proven_input.bin").unwrap();
+        let len = u64::from_le_bytes(data[..8].try_into().unwrap()) as usize;
+        let bi: BatchInput = bincode::deserialize(&data[8..8 + len]).unwrap();
+        let (_o, c) = crate::executor::execute_and_commit(&bi);
+        println!("INPUT_BIN_COMMITMENT: {c}");
     }
 
     #[test]
