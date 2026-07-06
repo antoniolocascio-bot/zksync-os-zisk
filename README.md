@@ -95,7 +95,25 @@ cargo-zisk verify-constraints -e <elf> -i input.bin
 ## Testing
 
 ```bash
-# Server integration tests (all 3 ZiSK tests)
+# Server integration test (fetches the server-assembled BatchInput from
+# /ZiSK/{batch}/peek and re-executes it with this lib's executor; requires
+# prover input generation, so run without the no-pig profile)
 cd ../zksync-os-server
-cargo nextest run -p zksync_os_integration_tests --profile no-pig -E 'test(zisk)'
+cargo nextest run -p zksync_os_integration_tests -E 'test(zisk)'
 ```
+
+## Backend portability
+
+Everything provable lives in the backend-neutral `lib/` (no_std-friendly; the
+crypto syscall bindings are behind the ZiSK target). `guest/` is a thin ZiSK
+shim: input framing, crypto provider installation, and the 32-byte commit.
+Keep new logic in `lib/` so a second zkVM backend stays cheap.
+
+A validated OpenVM (RV32IM) guest for this same lib is preserved on the
+`backup/openvm-main` branch (`guest-openvm/`): it reproduced the reference
+`BatchPublicInput` end-to-end and proved via app STARK → Halo2/KZG SNARK
+(~3.9 KB) in the 2026-07 benchmark. To revive it: cherry-pick `guest-openvm/`
+from that branch, re-pin its `openvm` crates (v2.0.0-beta.2 at the time), and
+re-run the lib's `test_proven` reader against `cargo openvm run` output.
+Inputs are passed as type-prefixed hex (`01` + hex via `--input`, JSON file
+form for inputs over 128 KB).
