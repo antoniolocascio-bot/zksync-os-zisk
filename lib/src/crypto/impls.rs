@@ -8,7 +8,7 @@ use alloy_primitives::Address;
 
 use revm::precompile::{
     bls12_381::{G1Point, G1PointScalar, G2Point, G2PointScalar},
-    Crypto, PrecompileError,
+    Crypto, PrecompileHalt,
 };
 
 use super::CustomEvmCrypto;
@@ -84,7 +84,7 @@ impl Crypto for CustomEvmCrypto {
 
     /// BN254 elliptic curve addition.
     #[inline]
-    fn bn254_g1_add(&self, p1: &[u8], p2: &[u8]) -> Result<[u8; 64], PrecompileError> {
+    fn bn254_g1_add(&self, p1: &[u8], p2: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             #[cfg(zisk_hints)]
@@ -104,9 +104,9 @@ impl Crypto for CustomEvmCrypto {
                 let ret = unsafe { bn254_g1_add_c(p1.as_ptr(), p2.as_ptr(), result.as_mut_ptr()) };
                 match ret {
                     0 | 1 => Ok(result),
-                    2 => Err(PrecompileError::other("bn254_g1_add inputs not in field")),
-                    3 => Err(PrecompileError::Bn254FieldPointNotAMember),
-                    _ => Err(PrecompileError::other("bn254_g1_add failed")),
+                    2 => Err(PrecompileHalt::other("bn254_g1_add inputs not in field")),
+                    3 => Err(PrecompileHalt::Bn254FieldPointNotAMember),
+                    _ => Err(PrecompileHalt::other("bn254_g1_add failed")),
                 }
             }
         }
@@ -119,7 +119,7 @@ impl Crypto for CustomEvmCrypto {
 
     /// BN254 elliptic curve scalar multiplication.
     #[inline]
-    fn bn254_g1_mul(&self, point: &[u8], scalar: &[u8]) -> Result<[u8; 64], PrecompileError> {
+    fn bn254_g1_mul(&self, point: &[u8], scalar: &[u8]) -> Result<[u8; 64], PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             #[cfg(zisk_hints)]
@@ -140,9 +140,9 @@ impl Crypto for CustomEvmCrypto {
                     unsafe { bn254_g1_mul_c(point.as_ptr(), scalar.as_ptr(), result.as_mut_ptr()) };
                 match ret {
                     0 | 1 => Ok(result), // 0=success, 1=success_infinity
-                    2 => Err(PrecompileError::other("bn254_g1_mul inputs not in field")),
-                    3 => Err(PrecompileError::Bn254FieldPointNotAMember),
-                    _ => Err(PrecompileError::other("bn254_g1_mul failed")),
+                    2 => Err(PrecompileHalt::other("bn254_g1_mul inputs not in field")),
+                    3 => Err(PrecompileHalt::Bn254FieldPointNotAMember),
+                    _ => Err(PrecompileHalt::other("bn254_g1_mul failed")),
                 }
             }
         }
@@ -155,7 +155,7 @@ impl Crypto for CustomEvmCrypto {
 
     /// BN254 pairing check.
     #[inline]
-    fn bn254_pairing_check(&self, pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileError> {
+    fn bn254_pairing_check(&self, pairs: &[(&[u8], &[u8])]) -> Result<bool, PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             // Each pair is G1 (64 bytes) + G2 (128 bytes) = 192 bytes
@@ -184,14 +184,14 @@ impl Crypto for CustomEvmCrypto {
                 match ret {
                     0 => Ok(true),
                     1 => Ok(false),
-                    2 => Err(PrecompileError::other("bn254 G1 inputs not in field")),
-                    3 => Err(PrecompileError::Bn254FieldPointNotAMember),
-                    4 => Err(PrecompileError::other("bn254 G2 inputs not in field")),
-                    5 => Err(PrecompileError::other("bn254 G2 point not on curve")),
-                    6 => Err(PrecompileError::other(
+                    2 => Err(PrecompileHalt::other("bn254 G1 inputs not in field")),
+                    3 => Err(PrecompileHalt::Bn254FieldPointNotAMember),
+                    4 => Err(PrecompileHalt::other("bn254 G2 inputs not in field")),
+                    5 => Err(PrecompileHalt::other("bn254 G2 point not on curve")),
+                    6 => Err(PrecompileHalt::other(
                         "bn254 pairing check subgroup check failed",
                     )),
-                    _ => Err(PrecompileError::other("bn254_pairing_check failed")),
+                    _ => Err(PrecompileHalt::other("bn254_pairing_check failed")),
                 }
             }
         }
@@ -209,7 +209,7 @@ impl Crypto for CustomEvmCrypto {
         sig: &[u8; 64],
         recid: u8,
         msg: &[u8; 32],
-    ) -> Result<[u8; 32], PrecompileError> {
+    ) -> Result<[u8; 32], PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             #[cfg(zisk_hints)]
@@ -244,7 +244,7 @@ impl Crypto for CustomEvmCrypto {
                 };
                 match ret {
                     0 => Ok(output),
-                    _ => Err(PrecompileError::Secp256k1RecoverFailed),
+                    _ => Err(PrecompileHalt::Secp256k1RecoverFailed),
                 }
             }
         }
@@ -270,7 +270,7 @@ impl Crypto for CustomEvmCrypto {
 
     /// Modular exponentiation.
     #[inline]
-    fn modexp(&self, base: &[u8], exp: &[u8], modulus: &[u8]) -> Result<Vec<u8>, PrecompileError> {
+    fn modexp(&self, base: &[u8], exp: &[u8], modulus: &[u8]) -> Result<Vec<u8>, PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             #[cfg(zisk_hints)]
@@ -317,7 +317,7 @@ impl Crypto for CustomEvmCrypto {
 
     /// Blake2 compression function.
     #[inline]
-    fn blake2_compress(&self, rounds: u32, h: &mut [u64; 8], m: [u64; 16], t: [u64; 2], f: bool) {
+    fn blake2_compress(&self, rounds: u32, h: &mut [u64; 8], m: &[u64; 16], t: &[u64; 2], f: bool) {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             #[cfg(zisk_hints)]
@@ -379,7 +379,7 @@ impl Crypto for CustomEvmCrypto {
         y: &[u8; 32],
         commitment: &[u8; 48],
         proof: &[u8; 48],
-    ) -> Result<(), PrecompileError> {
+    ) -> Result<(), PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             #[cfg(zisk_hints)]
@@ -399,7 +399,7 @@ impl Crypto for CustomEvmCrypto {
                     verify_kzg_proof_c(z.as_ptr(), y.as_ptr(), commitment.as_ptr(), proof.as_ptr())
                 };
                 if !valid {
-                    return Err(PrecompileError::BlobVerifyKzgProofFailed);
+                    return Err(PrecompileHalt::BlobVerifyKzgProofFailed);
                 }
                 Ok(())
             }
@@ -413,7 +413,7 @@ impl Crypto for CustomEvmCrypto {
     }
 
     /// BLS12-381 G1 addition (returns 96-byte unpadded G1 point)
-    fn bls12_381_g1_add(&self, a: G1Point, b: G1Point) -> Result<[u8; 96], PrecompileError> {
+    fn bls12_381_g1_add(&self, a: G1Point, b: G1Point) -> Result<[u8; 96], PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             // G1Point is ([u8; 48], [u8; 48])
@@ -445,7 +445,7 @@ impl Crypto for CustomEvmCrypto {
 
                 match ret_code {
                     0 | 1 => Ok(result),
-                    _ => Err(PrecompileError::Bls12381G1NotOnCurve),
+                    _ => Err(PrecompileHalt::Bls12381G1NotOnCurve),
                 }
             }
         }
@@ -459,8 +459,8 @@ impl Crypto for CustomEvmCrypto {
     /// BLS12-381 G1 multi-scalar multiplication (returns 96-byte unpadded G1 point)
     fn bls12_381_g1_msm(
         &self,
-        pairs: &mut dyn Iterator<Item = Result<G1PointScalar, PrecompileError>>,
-    ) -> Result<[u8; 96], PrecompileError> {
+        pairs: &mut dyn Iterator<Item = Result<G1PointScalar, PrecompileHalt>>,
+    ) -> Result<[u8; 96], PrecompileHalt> {
         // TODO: Review if it's a better way to do this to avoid borrowing issues with pairs
         let mut collected: Vec<G1PointScalar> = Vec::new();
         for pair in pairs {
@@ -503,9 +503,9 @@ impl Crypto for CustomEvmCrypto {
 
                 match ret_code {
                     0 | 1 => Ok(result),
-                    2 => Err(PrecompileError::Bls12381G1NotOnCurve),
-                    3 => Err(PrecompileError::Bls12381G1NotInSubgroup),
-                    _ => Err(PrecompileError::other("bls12_381_g1_msm failed")),
+                    2 => Err(PrecompileHalt::Bls12381G1NotOnCurve),
+                    3 => Err(PrecompileHalt::Bls12381G1NotInSubgroup),
+                    _ => Err(PrecompileHalt::other("bls12_381_g1_msm failed")),
                 }
             }
         }
@@ -518,7 +518,7 @@ impl Crypto for CustomEvmCrypto {
     }
 
     /// BLS12-381 G2 addition (returns 192-byte unpadded G2 point)
-    fn bls12_381_g2_add(&self, a: G2Point, b: G2Point) -> Result<[u8; 192], PrecompileError> {
+    fn bls12_381_g2_add(&self, a: G2Point, b: G2Point) -> Result<[u8; 192], PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             // G2Point is ([u8; 48], [u8; 48], [u8; 48], [u8; 48])
@@ -553,7 +553,7 @@ impl Crypto for CustomEvmCrypto {
                 };
                 match ret_code {
                     0 | 1 => Ok(result),
-                    _ => Err(PrecompileError::Bls12381G2NotOnCurve),
+                    _ => Err(PrecompileHalt::Bls12381G2NotOnCurve),
                 }
             }
         }
@@ -567,8 +567,8 @@ impl Crypto for CustomEvmCrypto {
     /// BLS12-381 G2 multi-scalar multiplication (returns 192-byte unpadded G2 point)
     fn bls12_381_g2_msm(
         &self,
-        pairs: &mut dyn Iterator<Item = Result<G2PointScalar, PrecompileError>>,
-    ) -> Result<[u8; 192], PrecompileError> {
+        pairs: &mut dyn Iterator<Item = Result<G2PointScalar, PrecompileHalt>>,
+    ) -> Result<[u8; 192], PrecompileHalt> {
         // TODO: Review if it's a better way to do this to avoid borrowing issues with pairs
         let mut collected: Vec<G2PointScalar> = Vec::new();
         for pair in pairs {
@@ -611,9 +611,9 @@ impl Crypto for CustomEvmCrypto {
                 };
                 match ret_code {
                     0 | 1 => Ok(result),
-                    2 => Err(PrecompileError::Bls12381G2NotOnCurve),
-                    3 => Err(PrecompileError::Bls12381G2NotInSubgroup),
-                    _ => Err(PrecompileError::other("bls12_381_g2_msm failed")),
+                    2 => Err(PrecompileHalt::Bls12381G2NotOnCurve),
+                    3 => Err(PrecompileHalt::Bls12381G2NotInSubgroup),
+                    _ => Err(PrecompileHalt::other("bls12_381_g2_msm failed")),
                 }
             }
         }
@@ -629,7 +629,7 @@ impl Crypto for CustomEvmCrypto {
     fn bls12_381_pairing_check(
         &self,
         pairs: &[(G1Point, G2Point)],
-    ) -> Result<bool, PrecompileError> {
+    ) -> Result<bool, PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             // Each pair is G1Point (96 bytes) + G2Point (192 bytes) = 288 bytes
@@ -664,11 +664,11 @@ impl Crypto for CustomEvmCrypto {
                 match ret_code {
                     0 => Ok(true),
                     1 => Ok(false),
-                    2 => Err(PrecompileError::Bls12381G1NotOnCurve),
-                    3 => Err(PrecompileError::Bls12381G1NotInSubgroup),
-                    4 => Err(PrecompileError::Bls12381G2NotOnCurve),
-                    5 => Err(PrecompileError::Bls12381G2NotInSubgroup),
-                    _ => Err(PrecompileError::other("bls12_381_pairing_check failed")),
+                    2 => Err(PrecompileHalt::Bls12381G1NotOnCurve),
+                    3 => Err(PrecompileHalt::Bls12381G1NotInSubgroup),
+                    4 => Err(PrecompileHalt::Bls12381G2NotOnCurve),
+                    5 => Err(PrecompileHalt::Bls12381G2NotInSubgroup),
+                    _ => Err(PrecompileHalt::other("bls12_381_pairing_check failed")),
                 }
             }
         }
@@ -680,7 +680,7 @@ impl Crypto for CustomEvmCrypto {
     }
 
     /// BLS12-381 map field element to G1.
-    fn bls12_381_fp_to_g1(&self, fp: &[u8; 48]) -> Result<[u8; 96], PrecompileError> {
+    fn bls12_381_fp_to_g1(&self, fp: &[u8; 48]) -> Result<[u8; 96], PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             #[cfg(zisk_hints)]
@@ -697,7 +697,7 @@ impl Crypto for CustomEvmCrypto {
                 let ret_code = unsafe { bls12_381_fp_to_g1_c(result.as_mut_ptr(), fp.as_ptr()) };
                 match ret_code {
                     0 => Ok(result),
-                    _ => Err(PrecompileError::other("bls12_381_fp_to_g1 failed")),
+                    _ => Err(PrecompileHalt::other("bls12_381_fp_to_g1 failed")),
                 }
             }
         }
@@ -709,7 +709,7 @@ impl Crypto for CustomEvmCrypto {
     }
 
     /// BLS12-381 map field element to G2.
-    fn bls12_381_fp2_to_g2(&self, fp2: ([u8; 48], [u8; 48])) -> Result<[u8; 192], PrecompileError> {
+    fn bls12_381_fp2_to_g2(&self, fp2: ([u8; 48], [u8; 48])) -> Result<[u8; 192], PrecompileHalt> {
         #[cfg(any(all(target_os = "zkvm", target_vendor = "zisk"), zisk_hints))]
         {
             let mut fp2_bytes = [0u8; 96];
@@ -731,7 +731,7 @@ impl Crypto for CustomEvmCrypto {
                     unsafe { bls12_381_fp2_to_g2_c(result.as_mut_ptr(), fp2_bytes.as_ptr()) };
                 match ret_code {
                     0 => Ok(result),
-                    _ => Err(PrecompileError::other("bls12_381_fp2_to_g2 failed")),
+                    _ => Err(PrecompileHalt::other("bls12_381_fp2_to_g2 failed")),
                 }
             }
         }
