@@ -35,6 +35,7 @@ fn execute_and_commit_inner(input: &BatchInput) -> (BatchOutput, B256, B256, B25
     let spec_id = match input.spec_id {
         0 => ZkSpecId::AtlasV1,
         1 => ZkSpecId::AtlasV2,
+        2 => ZkSpecId::AtlasV3,
         _ => panic!("unknown spec_id: {}", input.spec_id),
     };
 
