@@ -55,7 +55,7 @@ This runs 8 stages:
 Stage 4 will fail on the default sample input because it generates an L2 transaction without signed bytes. Use the proven input instead:
 
 ```bash
-cd ~/zksync-os-second-proof-system/zksync-os-zisk/host
+cd ~/zksync-os-second-proof-system/zksync-os-zisk/lib
 cargo +nightly-2026-02-10 test -p zksync-os-zisk-lib export_proven_input_for_emulator -- --nocapture
 cp /tmp/proven_input.bin /tmp/zisk_e2e/input.bin
 ```

@@ -32,9 +32,8 @@ of state transitions.
 
 | Directory | What it is |
 |-----------|-----------|
-| `lib/` | Shared Rust library — REVM executor, merkle proof verification, batch commitment hashing, types. Used by guest, host, and the server. |
+| `lib/` | Shared Rust library — REVM executor, merkle proof verification, batch commitment hashing, types. Used by the guest and the server. |
 | `guest/` | ZiSK guest binary — compiled to RV64IMA ELF, runs inside the prover. Reads `BatchInput`, executes with proof verification, commits the batch hash. |
-| `host/` | Native CLI tool — `sample` (generate test input), `execute` (run REVM without proofs), `prepare` (convert JSON to ZiSK binary format). |
 Solidity verifiers (`ZiskVerifier.sol`, `ZiskSnarkPlonkVerifier.sol`) live in [era-contracts](https://github.com/vladbochok/era-contracts/tree/vb/zisk-verifier/l1-contracts/contracts/state-transition/verifiers) and are generated via `cargo run -- --variant zisk` in `era-contracts/tools/verifier-gen/`.
 
 ## What the ZiSK Proof Verifies
@@ -72,20 +71,19 @@ and a tree update proof extracted from the server's merkle tree.
 ## Development
 
 ```bash
-# Run lib tests
-cd host && cargo test -p zksync-os-zisk-lib
+# Run lib tests (includes the proven-path end-to-end tests)
+cd lib && cargo test
 
-# Build and execute natively (no proof)
-cargo build --release -p zksync-os-zisk-host
-./target/release/zksync-os-zisk-host sample -o batch.json
-./target/release/zksync-os-zisk-host execute -i batch.json
+# Generate a minimal ZiSK input natively (writes /tmp/proven_input.bin)
+cd lib && cargo test export_proven_input_for_emulator
+# Print the native reference commitment for those exact bytes
+cd lib && cargo test print_input_bin_commitment -- --ignored
 
 # Build guest for ZiSK prover
 cargo-zisk build --release   # in guest/
 
 # Run in ZiSK emulator
-zksync-os-zisk-host prepare -i batch.json -o input.bin
-cargo-zisk execute -e guest/target/riscv64ima-zisk-zkvm-elf/release/zksync-os-zisk-guest -i input.bin
+cargo-zisk execute -e guest/target/riscv64ima-zisk-zkvm-elf/release/zksync-os-zisk-guest -i /tmp/proven_input.bin
 
 # Verify ZiSK constraints (without full proving)
 cargo-zisk verify-constraints -e <elf> -i input.bin
