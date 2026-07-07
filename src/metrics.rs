@@ -38,6 +38,21 @@ pub struct ZiskProverMetrics {
     /// `cargo-zisk prove` subprocess time (integrated STARK + PLONK wrap).
     #[metrics(buckets = PROOF_TIME_BUCKETS)]
     pub prove_time: Histogram<Duration>,
+
+    /// One-time per-ELF `cargo-zisk program-setup` duration.
+    #[metrics(buckets = PROOF_TIME_BUCKETS)]
+    pub program_setup_time: Histogram<Duration>,
+
+    /// Proof attempts by outcome (success / failure / cancelled).
+    pub proofs: Family<ProofOutcome, vise::Counter>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EncodeLabelValue, EncodeLabelSet)]
+#[metrics(label = "outcome", rename_all = "snake_case")]
+pub enum ProofOutcome {
+    Success,
+    Failure,
+    Cancelled,
 }
 
 #[vise::register]

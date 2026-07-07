@@ -66,6 +66,7 @@ impl ZiskProver {
         let start = Instant::now();
         let done = run_cancellable(&self.binary, &args, cancel).await?;
         if done {
+            ZISK_PROVER_METRICS.program_setup_time.observe(start.elapsed());
             tracing::info!(elapsed_secs = start.elapsed().as_secs(), "program-setup complete");
         }
         Ok(done)
@@ -91,6 +92,12 @@ impl ZiskProver {
 
         let elapsed = start.elapsed();
         ZISK_PROVER_METRICS.proof_generation_time.observe(elapsed);
+        let outcome = match &result {
+            Ok(Some(_)) => crate::metrics::ProofOutcome::Success,
+            Ok(None) => crate::metrics::ProofOutcome::Cancelled,
+            Err(_) => crate::metrics::ProofOutcome::Failure,
+        };
+        ZISK_PROVER_METRICS.proofs[&outcome].inc();
 
         match &result {
             Ok(Some(_)) => {
