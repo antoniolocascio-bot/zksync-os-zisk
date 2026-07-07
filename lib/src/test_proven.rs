@@ -453,9 +453,9 @@ mod tests {
         }
 
         if let Some(ref tu) = batch.batch_meta.tree_update {
-            println!("tree_update: {} operations, {} entries, {} sorted_leaves, {} intermediate_hashes_old, {} intermediate_hashes_new, leaf_count_before={}",
+            println!("tree_update: {} operations, {} entries, {} sorted_leaves, {} intermediate_hashes, leaf_count_before={}",
                 tu.operations.len(), tu.entries.len(), tu.sorted_leaves.len(),
-                tu.intermediate_hashes.len(), tu.intermediate_hashes_new.len(), tu.leaf_count_before);
+                tu.intermediate_hashes.len(), tu.leaf_count_before);
 
             let inserts = tu.operations.iter().filter(|o| matches!(o, crate::merkle::WriteOp::Insert { .. })).count();
             let updates = tu.operations.iter().filter(|o| matches!(o, crate::merkle::WriteOp::Update { .. })).count();
