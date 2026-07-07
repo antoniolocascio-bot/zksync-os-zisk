@@ -4,6 +4,19 @@ use revm::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
 /// Current `BatchInput` wire-format version.
+///
+/// **v1 is frozen (2026-07-07).** The wire format is bincode 1.x
+/// (non-self-describing, positional, little-endian) over the structs in this
+/// module, framed for the ZiSK guest as `[len: u64 LE][bincode][zero pad to
+/// 8]`. Every field is required; there are no optional-at-the-wire fields.
+///
+/// Compatibility rule: the server (input builder), the guest ELF, and the
+/// prover service must be built from the same revision of this crate. Any
+/// change to the layout of `BatchInput` or anything it transitively contains
+/// bumps this constant in the same commit; the executor rejects versions it
+/// does not understand before touching the rest of the payload, so a skew
+/// fails with a named error instead of a positional misparse. A version bump
+/// implies a guest rebuild and therefore a VK rotation.
 pub const BATCH_INPUT_VERSION: u32 = 1;
 
 use crate::merkle::{BatchTreeUpdate, StorageProof};
@@ -25,7 +38,6 @@ pub struct BatchInput {
     pub batch_meta: BatchMeta,
     /// Contract bytecodes keyed by code hash (keccak256).
     /// Shared across all blocks in the batch.
-    #[serde(default)]
     pub bytecodes: Vec<(B256, Vec<u8>)>,
 }
 
@@ -69,22 +81,13 @@ pub struct BatchMeta {
     /// For each account whose 0x8003 value changed, the server provides the
     /// full after-state preimage. The executor verifies nonce/balance match
     /// REVM's output, then checks blake2s(preimage) == tree_update value.
-    #[serde(default)]
     pub account_preimages_after: Vec<(Address, Vec<u8>)>,
     /// Chain-config inputs committed into the batch public input via
     /// `chain_config_hash` (zksync-os draft-0.4.0 `ChainConfig::hash`).
     /// `fri_proof_verification_enabled` and `max_tx_gas_limit` are not otherwise
     /// present in the batch; `chain_id` is taken from `BatchInput::chain_id`.
-    #[serde(default)]
     pub fri_proof_verification_enabled: bool,
-    #[serde(default = "default_max_tx_gas_limit")]
     pub max_tx_gas_limit: u64,
-}
-
-/// Behavior-preserving default per EIP-7825 (2^24), matching zksync-os
-/// `DEFAULT_MAX_TX_GAS_LIMIT`, for dumps that predate this field.
-fn default_max_tx_gas_limit() -> u64 {
-    1 << 24
 }
 
 /// Single block input with pre-state and transactions.
@@ -115,8 +118,6 @@ pub struct BlockInput {
     /// Per-block tree root that this block's merkle proofs were extracted from.
     /// For the first block in a batch this equals batch_meta.tree_root_before.
     /// For subsequent blocks this is the tree root after prior blocks' writes.
-    /// Defaults to B256::ZERO for backward compat (executor falls back to batch root).
-    #[serde(default)]
     pub expected_tree_root: B256,
 }
 
