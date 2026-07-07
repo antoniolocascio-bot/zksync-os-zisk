@@ -25,9 +25,15 @@ pub(super) fn execute_block_proven(
         run_evm_block(chain_id, spec_id, block, cache_db);
 
     let total_gas_used: u64 = tx_results.iter().map(|t| t.gas_used).sum();
-    // Native (zksync-os v0.0.29) commits transactions as a keccak rolling
-    // hash over the tx hashes and keeps receipts_root zero in the header.
-    let tx_root = block_header::transactions_rolling_hash(&tx_hashes);
+    // Native commits transactions as a keccak rolling hash over the tx hashes
+    // and keeps receipts_root zero in the header. The seed changed with the
+    // zksync-os v0.3.x line: zero before AtlasV3, keccak256([]) from AtlasV3.
+    let rolling_hash_seed = if ZkSpecId::AtlasV3.is_enabled_in(spec_id) {
+        block_header::KECCAK_EMPTY
+    } else {
+        B256::ZERO
+    };
+    let tx_root = block_header::transactions_rolling_hash(&tx_hashes, rolling_hash_seed);
     let receipts_root = B256::ZERO;
 
 

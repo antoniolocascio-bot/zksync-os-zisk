@@ -115,11 +115,22 @@ fn be_bytes_trimmed(val: usize) -> Vec<u8> {
     bytes[start..].to_vec()
 }
 
+/// Keccak256 of the empty input — the AtlasV3 rolling-hash seed.
+pub const KECCAK_EMPTY: B256 = B256::new([
+    0xc5, 0xd2, 0x46, 0x01, 0x86, 0xf7, 0x23, 0x3c, 0x92, 0x7e, 0x7d, 0xb2,
+    0xdc, 0xc7, 0x03, 0xc0, 0xe5, 0x00, 0xb6, 0x53, 0xca, 0x82, 0x27, 0x3b,
+    0x7b, 0xfa, 0xd8, 0x04, 0x5d, 0x85, 0xa4, 0x70,
+]);
+
 /// Native transactions commitment: `keccak256(rolling ‖ tx_hash)` folded over
-/// the block's tx hashes, starting from zero (zksync-os `bootloader/mod.rs`
-/// `tx_rolling_hash`). This value is the header's `transactions_root`.
-pub fn transactions_rolling_hash(tx_hashes: &[B256]) -> B256 {
-    let mut rolling = B256::ZERO;
+/// the block's tx hashes. This value is the header's `transactions_root`.
+///
+/// The seed is version-dependent: zksync-os up to v0.2.x (AtlasV1/V2,
+/// `bootloader/mod.rs` `tx_rolling_hash = [0u8; 32]`) starts from zero, while
+/// v0.3.x (AtlasV3, `TransactionsRollingKeccakHasher::empty()`) starts from
+/// `keccak256([])`.
+pub fn transactions_rolling_hash(tx_hashes: &[B256], seed: B256) -> B256 {
+    let mut rolling = seed;
     for tx_hash in tx_hashes {
         let mut buf = [0u8; 64];
         buf[..32].copy_from_slice(rolling.as_slice());
@@ -127,4 +138,34 @@ pub fn transactions_rolling_hash(tx_hashes: &[B256]) -> B256 {
         rolling = keccak256(&buf);
     }
     rolling
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keccak_empty_constant_matches_keccak_of_empty_input() {
+        assert_eq!(KECCAK_EMPTY, keccak256(&[]));
+    }
+
+    #[test]
+    fn rolling_hash_of_no_txs_returns_the_seed() {
+        assert_eq!(transactions_rolling_hash(&[], B256::ZERO), B256::ZERO);
+        assert_eq!(transactions_rolling_hash(&[], KECCAK_EMPTY), KECCAK_EMPTY);
+    }
+
+    #[test]
+    fn rolling_hash_folds_seed_then_tx_hashes() {
+        let tx = B256::repeat_byte(0x11);
+        let mut buf = [0u8; 64];
+        buf[32..].copy_from_slice(tx.as_slice());
+        let expected_zero_seed = keccak256(&buf);
+        assert_eq!(transactions_rolling_hash(&[tx], B256::ZERO), expected_zero_seed);
+
+        buf[..32].copy_from_slice(KECCAK_EMPTY.as_slice());
+        let expected_keccak_seed = keccak256(&buf);
+        assert_eq!(transactions_rolling_hash(&[tx], KECCAK_EMPTY), expected_keccak_seed);
+        assert_ne!(expected_zero_seed, expected_keccak_seed);
+    }
 }
