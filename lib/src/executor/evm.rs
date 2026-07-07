@@ -131,7 +131,7 @@ where
     for (tx_idx, tx_input) in block.transactions.iter().enumerate() {
         evm.0.ctx.chain.set_tx_number(tx_idx as u16);
 
-        let (tx, tx_hash, _tx_type) = build_proven_tx(tx_input);
+        let (tx, tx_hash, _tx_type) = build_proven_tx(tx_input, block.gas_limit);
         tx_hashes.push(tx_hash);
 
         match evm.transact_commit(tx) {

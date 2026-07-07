@@ -96,6 +96,7 @@ fn execute_and_commit_inner(input: &BatchInput) -> (BatchOutput, B256, B256, B25
     let mut l2_to_l1_encoded_logs = Vec::new();
     let mut num_l1_txs: u64 = 0;
     let mut num_l2_txs: u64 = 0;
+    let mut interop_roots_rolling_hash = B256::ZERO;
 
     for block in &input.blocks {
         for tx in &block.transactions {
@@ -113,6 +114,18 @@ fn execute_and_commit_inner(input: &BatchInput) -> (BatchOutput, B256, B256, B25
                 }
                 TxAuth::L2 { .. } => {
                     num_l2_txs += 1;
+                }
+                TxAuth::System { tx_hash, encoded_2718 } => {
+                    // System txs count as L2 txs in the batch commitment;
+                    // interop-root imports additionally fold every imported
+                    // root into the dependency-roots rolling hash. Both facts
+                    // are derived from the hash-authenticated encoding.
+                    num_l2_txs += 1;
+                    tx::fold_system_tx_interop_roots(
+                        tx_hash,
+                        encoded_2718,
+                        &mut interop_roots_rolling_hash,
+                    );
                 }
             }
         }
@@ -153,7 +166,7 @@ fn execute_and_commit_inner(input: &BatchInput) -> (BatchOutput, B256, B256, B25
         &priority_ops_hash,
         &l2_logs_root_hash,
         &meta.upgrade_tx_hash,
-        &B256::ZERO, // interop_roots_rolling_hash (0 in this batch)
+        &interop_roots_rolling_hash,
         meta.sl_chain_id,
     );
 

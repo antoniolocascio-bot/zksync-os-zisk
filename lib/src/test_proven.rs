@@ -449,6 +449,7 @@ mod tests {
                 b.transactions.iter().map(|t| match &t.auth {
                     TxAuth::L1 { .. } => "L1".to_string(),
                     TxAuth::Upgrade { .. } => "Upgrade".to_string(),
+                    TxAuth::System { .. } => "System".to_string(),
                     TxAuth::L2 { .. } => "L2".to_string(),
                 }).collect::<Vec<_>>(),
                 b.account_preimages.len(),
@@ -521,6 +522,7 @@ mod tests {
                         TxAuth::L1 { tx_hash, .. } => format!("L1({tx_hash})"),
                         TxAuth::Upgrade { tx_hash, .. } => format!("Upgrade({tx_hash})"),
                         TxAuth::L2 { signed_bytes } => format!("L2({}B)", signed_bytes.len()),
+                        TxAuth::System { tx_hash, .. } => format!("System({tx_hash})"),
                     });
             }
         }

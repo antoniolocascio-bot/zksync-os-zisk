@@ -53,14 +53,19 @@ mod abi_layout {
 /// All execution fields are derived from the authenticated source:
 /// - L1/Upgrade: from the ABI encoding (hash-verified against tx_hash)
 /// - L2: from the RLP-encoded signed bytes (signature-verified via ecrecover)
+/// - System: from the EIP-2718 encoding (hash-verified against tx_hash)
 ///
 /// Only `gas_used_override` and `force_fail` are taken from TxInput.
-pub(super) fn build_proven_tx(input: &TxInput) -> (ZKsyncTx<TxEnv>, B256, u8) {
+/// `block_gas_limit` caps system transactions, whose own gas limit is zero.
+pub(super) fn build_proven_tx(input: &TxInput, block_gas_limit: u64) -> (ZKsyncTx<TxEnv>, B256, u8) {
     match &input.auth {
         TxAuth::L1 { tx_hash, abi_encoded } | TxAuth::Upgrade { tx_hash, abi_encoded } => {
             build_l1_upgrade_tx(input, tx_hash, abi_encoded)
         }
         TxAuth::L2 { signed_bytes } => build_l2_tx(input, signed_bytes),
+        TxAuth::System { tx_hash, encoded_2718 } => {
+            build_system_tx(input, tx_hash, encoded_2718, block_gas_limit)
+        }
     }
 }
 
@@ -186,4 +191,213 @@ fn build_l2_tx(input: &TxInput, signed_bytes: &[u8]) -> (ZKsyncTx<TxEnv>, B256, 
         .expect("failed to build ZKsyncTx");
 
     (tx, tx_hash, tx_type)
+}
+
+/// The system tx type byte (`SYSTEM_TX_TYPE_ID` in zksync-os-server types).
+const SYSTEM_TX_TYPE: u8 = 0x7d;
+
+/// The formal bootloader address — the protocol-defined sender of every
+/// system transaction (a constant, never witness data).
+const BOOTLOADER_FORMAL_ADDRESS: [u8; 20] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x01,
+];
+
+/// Build a protocol-injected system transaction (interop root import,
+/// SL-chain-id update, interop fee update) from its EIP-2718 encoding:
+/// `0x7d ‖ rlp([to, input, salt])`, hash-verified against `tx_hash`.
+///
+/// Mirrors the consistency checker's construction: caller = bootloader
+/// formal address, zero gas price / value / nonce, block gas limit (the
+/// tx's own is zero and the handler rejects `gas_used_override` above the
+/// limit), service tx type 0x7d (validation skipped).
+fn build_system_tx(
+    input: &TxInput,
+    tx_hash: &B256,
+    encoded_2718: &[u8],
+    block_gas_limit: u64,
+) -> (ZKsyncTx<TxEnv>, B256, u8) {
+    // Authenticates the encoding against tx_hash and decodes (to, calldata).
+    let (to, data) = decode_system_tx(tx_hash, encoded_2718);
+    let to = revm::primitives::Address::from(to);
+
+    let caller = revm::primitives::Address::from(BOOTLOADER_FORMAL_ADDRESS);
+
+    let builder = TxEnv::builder()
+        .caller(caller)
+        .gas_limit(block_gas_limit)
+        .gas_price(0)
+        .gas_priority_fee(Some(0))
+        .kind(revm::primitives::TxKind::Call(to))
+        .value(U256::ZERO)
+        .data(Bytes::from(data))
+        .nonce(0)
+        .tx_type(Some(SYSTEM_TX_TYPE))
+        .chain_id(None)
+        .blob_hashes(vec![]);
+
+    let tx = ZKsyncTxBuilder::new()
+        .base(builder)
+        .mint(U256::ZERO)
+        .refund_recipient(None)
+        .gas_used_override(input.gas_used_override)
+        .force_fail(input.force_fail)
+        .tx_hash(*tx_hash)
+        .build()
+        .expect("failed to build system ZKsyncTx");
+
+    (tx, *tx_hash, SYSTEM_TX_TYPE)
+}
+
+/// Parse one RLP item header at `pos`; returns (payload_start, payload_len).
+/// Panics on malformed input — the encoding is hash-authenticated, so any
+/// malformation is a witness-integrity failure, not a recoverable state.
+fn rlp_header(buf: &[u8], pos: usize, expect_list: bool) -> (usize, usize) {
+    assert!(pos < buf.len(), "RLP: truncated at header");
+    let b = buf[pos];
+    let (is_list, payload_start, payload_len) = match b {
+        0x00..=0x7f => (false, pos, 1),
+        0x80..=0xb7 => (false, pos + 1, (b - 0x80) as usize),
+        0xb8..=0xbf => {
+            let len_len = (b - 0xb7) as usize;
+            let payload_len = rlp_len(buf, pos + 1, len_len);
+            (false, pos + 1 + len_len, payload_len)
+        }
+        0xc0..=0xf7 => (true, pos + 1, (b - 0xc0) as usize),
+        0xf8..=0xff => {
+            let len_len = (b - 0xf7) as usize;
+            let payload_len = rlp_len(buf, pos + 1, len_len);
+            (true, pos + 1 + len_len, payload_len)
+        }
+    };
+    assert_eq!(is_list, expect_list, "RLP: unexpected item kind");
+    assert!(
+        payload_start + payload_len <= buf.len(),
+        "RLP: payload out of bounds"
+    );
+    (payload_start, payload_len)
+}
+
+/// Read a big-endian length of `len_len` bytes (long-form RLP headers).
+fn rlp_len(buf: &[u8], pos: usize, len_len: usize) -> usize {
+    assert!(len_len <= 8 && pos + len_len <= buf.len(), "RLP: bad length");
+    buf[pos..pos + len_len]
+        .iter()
+        .fold(0usize, |acc, &b| (acc << 8) | b as usize)
+}
+
+// System tx call selectors (keccak256 of the canonical signatures, first 4
+// bytes) and their protocol-defined target addresses — must stay in lockstep
+// with zksync-os-server's `SystemTxInput`.
+const SEL_ADD_INTEROP_ROOTS: [u8; 4] = [0xcc, 0xa2, 0xf7, 0xbc]; // addInteropRootsInBatch((uint256,uint256,bytes32[])[])
+const SEL_SET_SL_CHAIN_ID: [u8; 4] = [0x04, 0x02, 0x03, 0xe6]; // setSettlementLayerChainId(uint256)
+const SEL_SET_INTEROP_FEE: [u8; 4] = [0x08, 0x27, 0x3d, 0x8a]; // setInteropFee(uint256)
+
+const L2_INTEROP_ROOT_STORAGE_ADDRESS: [u8; 20] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08,
+];
+const SYSTEM_CONTEXT_ADDRESS: [u8; 20] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x0b,
+];
+const L2_INTEROP_CENTER_ADDRESS: [u8; 20] = [
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x0d,
+];
+
+/// Authenticate a system tx encoding and decode its (to, calldata).
+fn decode_system_tx(tx_hash: &B256, encoded_2718: &[u8]) -> ([u8; 20], Vec<u8>) {
+    let computed = crate::hash::keccak256(encoded_2718);
+    assert_eq!(
+        computed, *tx_hash,
+        "system tx hash mismatch: keccak256(encoded)={computed}, claimed={tx_hash}"
+    );
+    assert!(
+        !encoded_2718.is_empty() && encoded_2718[0] == SYSTEM_TX_TYPE,
+        "system tx type byte mismatch"
+    );
+    let rlp = &encoded_2718[1..];
+    let (list_start, list_len) = rlp_header(rlp, 0, true);
+    assert_eq!(list_start + list_len, rlp.len(), "system tx RLP has trailing bytes");
+    let (to_start, to_len) = rlp_header(rlp, list_start, false);
+    assert_eq!(to_len, 20, "system tx `to` must be a 20-byte address");
+    let mut to = [0u8; 20];
+    to.copy_from_slice(&rlp[to_start..to_start + 20]);
+    let (input_start, input_len) = rlp_header(rlp, to_start + to_len, false);
+    let data = rlp[input_start..input_start + input_len].to_vec();
+    let (salt_start, salt_len) = rlp_header(rlp, input_start + input_len, false);
+    assert!(salt_len <= 8, "system tx `salt` must fit in u64");
+    assert_eq!(salt_start + salt_len, rlp.len(), "system tx RLP not fully consumed");
+    (to, data)
+}
+
+/// Fold the interop roots of an `addInteropRootsInBatch` system tx into the
+/// batch's dependency-roots rolling hash, exactly as the server's batch
+/// builder does: `hash = keccak256(hash ‖ chainId ‖ blockOrBatchNumber ‖
+/// sides…)` per root, in calldata order. Non-import system txs (SL-chain-id,
+/// interop-fee updates) contribute nothing; unknown selectors are rejected.
+pub(super) fn fold_system_tx_interop_roots(
+    tx_hash: &B256,
+    encoded_2718: &[u8],
+    rolling_hash: &mut B256,
+) {
+    let (to, data) = decode_system_tx(tx_hash, encoded_2718);
+    assert!(data.len() >= 4, "system tx calldata missing selector");
+    let selector: [u8; 4] = data[..4].try_into().unwrap();
+    match selector {
+        SEL_ADD_INTEROP_ROOTS => {
+            assert_eq!(to, L2_INTEROP_ROOT_STORAGE_ADDRESS, "interop import to wrong target");
+            for (chain_id, block_or_batch, sides) in decode_interop_roots(&data[4..]) {
+                let mut buf = Vec::with_capacity(96 + 32 * sides.len());
+                buf.extend_from_slice(rolling_hash.as_slice());
+                buf.extend_from_slice(&chain_id);
+                buf.extend_from_slice(&block_or_batch);
+                for side in &sides {
+                    buf.extend_from_slice(side.as_slice());
+                }
+                *rolling_hash = crate::hash::keccak256(&buf);
+            }
+        }
+        SEL_SET_SL_CHAIN_ID => {
+            assert_eq!(to, SYSTEM_CONTEXT_ADDRESS, "SL-chain-id update to wrong target");
+        }
+        SEL_SET_INTEROP_FEE => {
+            assert_eq!(to, L2_INTEROP_CENTER_ADDRESS, "interop-fee update to wrong target");
+        }
+        _ => panic!("unknown system transaction selector: {selector:02x?}"),
+    }
+}
+
+/// Strict ABI decode of `InteropRoot[]` (`(uint256,uint256,bytes32[])[]`)
+/// from post-selector calldata. Returns raw 32-byte words for the two
+/// uint256 fields (only ever re-encoded into the rolling hash) plus sides.
+fn decode_interop_roots(abi: &[u8]) -> Vec<([u8; 32], [u8; 32], Vec<B256>)> {
+    let word = |off: usize| -> [u8; 32] {
+        assert!(off + 32 <= abi.len(), "interop ABI: word out of bounds");
+        abi[off..off + 32].try_into().unwrap()
+    };
+    let uword = |off: usize| -> usize {
+        let w = word(off);
+        assert!(w[..24].iter().all(|&b| b == 0), "interop ABI: offset/length too large");
+        u64::from_be_bytes(w[24..].try_into().unwrap()) as usize
+    };
+
+    let array_off = uword(0);
+    let n = uword(array_off);
+    let elems_base = array_off + 32;
+    let mut roots = Vec::with_capacity(n);
+    for i in 0..n {
+        let struct_off = elems_base + uword(elems_base + 32 * i);
+        let chain_id = word(struct_off);
+        let block_or_batch = word(struct_off + 32);
+        let sides_off = struct_off + uword(struct_off + 64);
+        let m = uword(sides_off);
+        let mut sides = Vec::with_capacity(m);
+        for j in 0..m {
+            sides.push(B256::from(word(sides_off + 32 + 32 * j)));
+        }
+        roots.push((chain_id, block_or_batch, sides));
+    }
+    roots
 }

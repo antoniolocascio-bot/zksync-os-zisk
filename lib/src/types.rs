@@ -5,10 +5,14 @@ use serde::{Deserialize, Serialize};
 
 /// Current `BatchInput` wire-format version.
 ///
-/// **v1 is frozen (2026-07-07).** The wire format is bincode 1.x
-/// (non-self-describing, positional, little-endian) over the structs in this
-/// module, framed for the ZiSK guest as `[len: u64 LE][bincode][zero pad to
-/// 8]`. Every field is required; there are no optional-at-the-wire fields.
+/// **v2 (2026-07-07)**: adds `TxAuth::System` (system transactions — interop
+/// root imports, SL-chain-id updates, interop fee updates — carried as their
+/// EIP-2718 encoding and authenticated by `keccak256(encoded) == tx_hash`).
+/// v1 (frozen 2026-07-07) is otherwise unchanged. The wire format is
+/// bincode 1.x (non-self-describing, positional, little-endian) over the
+/// structs in this module, framed for the ZiSK guest as
+/// `[len: u64 LE][bincode][zero pad to 8]`. Every field is required; there
+/// are no optional-at-the-wire fields.
 ///
 /// Compatibility rule: the server (input builder), the guest ELF, and the
 /// prover service must be built from the same revision of this crate. Any
@@ -17,7 +21,7 @@ use serde::{Deserialize, Serialize};
 /// does not understand before touching the rest of the payload, so a skew
 /// fails with a named error instead of a positional misparse. A version bump
 /// implies a guest rebuild and therefore a VK rotation.
-pub const BATCH_INPUT_VERSION: u32 = 1;
+pub const BATCH_INPUT_VERSION: u32 = 2;
 
 use crate::merkle::{BatchTreeUpdate, StorageProof};
 
@@ -137,6 +141,12 @@ pub enum TxAuth {
     /// L2 transaction. `signed_bytes` is EIP-2718 encoded; all execution fields
     /// are decoded from the RLP envelope, caller recovered via ecrecover.
     L2 { signed_bytes: Vec<u8> },
+    /// Protocol-injected system transaction (interop root import, SL-chain-id
+    /// update, interop fee update). `encoded_2718` is
+    /// `0x7d ‖ rlp([to, input, salt])` whose `keccak256` equals `tx_hash`;
+    /// execution fields are decoded from it. The caller is always the
+    /// bootloader formal address (a protocol constant, not witness data).
+    System { tx_hash: B256, encoded_2718: Vec<u8> },
 }
 
 /// Transaction input for the ZiSK executor.
