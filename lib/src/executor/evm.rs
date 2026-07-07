@@ -150,7 +150,9 @@ where
                         data: l.data.data.to_vec(),
                     })
                     .collect();
-                cumulative_gas_used += result.gas_used();
+                // Receipt gas: post-EIP-8037 `gas_used()` is ambiguous
+                // (regular + state gas); receipts carry `tx_gas_used()`.
+                cumulative_gas_used += result.tx_gas_used();
                 receipt_hashes.push(block_header::receipt_hash(
                     tx_type,
                     result.is_success(),
@@ -170,7 +172,7 @@ where
                 }
                 tx_results.push(TxOutput {
                     success: result.is_success(),
-                    gas_used: result.gas_used(),
+                    gas_used: result.tx_gas_used(),
                     output: result.output().map(|b| b.to_vec()).unwrap_or_default(),
                 });
             }
