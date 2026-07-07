@@ -1,6 +1,6 @@
 //! Shared types for ZiSK guest/host communication.
 
-use revm::primitives::{Address, B256, U256};
+use revm::primitives::{Address, B256};
 use serde::{Deserialize, Serialize};
 
 /// Current `BatchInput` wire-format version.

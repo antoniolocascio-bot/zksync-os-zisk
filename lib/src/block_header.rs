@@ -1,13 +1,13 @@
 //! Block header hash computation (RLP encoding + Keccak256).
 //!
 //! Computes the ZKsync OS block header hash using the same Ethereum block
-//! header format as zksync-os's `basic_bootloader::block_header::BlockHeader`.
-//! Several fields are fixed (post-merge constants, zero state/receipts roots).
+//! header format as zksync-os's `basic_bootloader::block_header::BlockHeader`
+//! (v0.0.29): `transactions_root` carries the keccak rolling hash of the
+//! block's tx hashes; state root, receipts root and bloom stay zero.
 
 use alloy_primitives::B256;
 
 use crate::commitment::keccak256;
-use crate::merkle::blake2s;
 
 /// Keccak256(RLP([])) — the empty ommers hash (post-merge constant).
 const EMPTY_OMMER_HASH: B256 = B256::new([
@@ -112,94 +112,16 @@ fn be_bytes_trimmed(val: usize) -> Vec<u8> {
     bytes[start..].to_vec()
 }
 
-// ---------------------------------------------------------------------------
-// Per-block transactions_root / receipts_root (Blake2s Merkle, depth 32).
-//
-// Matches zksync-os draft-0.4.0 `zk_block_tx_tree_root_in_place` /
-// `merkle_root_in_place::<Blake2s256>` (basic_bootloader .../zk/block_data.rs):
-// leaves are folded pairwise with Blake2s(left || right), a ZERO empty leaf,
-// and empty-subtree hashes `empty[i] = blake2s(empty[i-1] || empty[i-1])`.
-// ---------------------------------------------------------------------------
-
-const BLOCK_TX_TREE_DEPTH: usize = 32;
-
-fn blake2s_node(l: &B256, r: &B256) -> B256 {
-    let mut buf = [0u8; 64];
-    buf[..32].copy_from_slice(l.as_slice());
-    buf[32..].copy_from_slice(r.as_slice());
-    blake2s(&buf)
-}
-
-/// Fold `leaves` into the per-block tx/receipt Merkle root.
-pub fn block_tx_merkle_root(leaves: &[B256]) -> B256 {
-    let mut empty = [B256::ZERO; BLOCK_TX_TREE_DEPTH + 1];
-    for i in 1..=BLOCK_TX_TREE_DEPTH {
-        empty[i] = blake2s_node(&empty[i - 1], &empty[i - 1]);
+/// Native transactions commitment: `keccak256(rolling ‖ tx_hash)` folded over
+/// the block's tx hashes, starting from zero (zksync-os `bootloader/mod.rs`
+/// `tx_rolling_hash`). This value is the header's `transactions_root`.
+pub fn transactions_rolling_hash(tx_hashes: &[B256]) -> B256 {
+    let mut rolling = B256::ZERO;
+    for tx_hash in tx_hashes {
+        let mut buf = [0u8; 64];
+        buf[..32].copy_from_slice(rolling.as_slice());
+        buf[32..].copy_from_slice(tx_hash.as_slice());
+        rolling = keccak256(&buf);
     }
-    let mut count = leaves.len();
-    if count == 0 {
-        return empty[BLOCK_TX_TREE_DEPTH];
-    }
-    let mut nodes = leaves.to_vec();
-    for level in 0..BLOCK_TX_TREE_DEPTH {
-        let pairs = count.div_ceil(2);
-        for i in 0..pairs {
-            let l = nodes[i * 2];
-            let r = if i * 2 + 1 < count { nodes[i * 2 + 1] } else { empty[level] };
-            nodes[i] = blake2s_node(&l, &r);
-        }
-        count = pairs;
-    }
-    nodes[0]
-}
-
-/// A minimal EVM log for ZK receipt-hash encoding.
-pub struct LogEntry {
-    pub address: [u8; 20],
-    pub topics: Vec<B256>,
-    pub data: Vec<u8>,
-}
-
-/// ZK receipt-hash leaf, matching zksync-os draft-0.4.0 `compute_receipt_hash`:
-/// `blake2s(type? || rlp([status, cumulative_gas_used, zero_bloom(256), [logs]]))`,
-/// where the logs_bloom is always the 256-byte zero bloom (ZK convention).
-pub fn receipt_hash(
-    tx_type: u8,
-    success: bool,
-    cumulative_gas_used: u64,
-    logs: &[LogEntry],
-) -> B256 {
-    let mut inner = Vec::new();
-    // status: Eip658Value uint (0/1)
-    rlp_encode_number(&mut inner, &(success as u64).to_be_bytes());
-    rlp_encode_number(&mut inner, &cumulative_gas_used.to_be_bytes());
-    rlp_encode_bytes(&mut inner, &[0u8; 256]); // logs_bloom = zero
-    // logs list
-    let mut logs_inner = Vec::new();
-    for lg in logs {
-        let mut le = Vec::new();
-        rlp_encode_bytes(&mut le, &lg.address);
-        let mut topics_inner = Vec::new();
-        for t in &lg.topics {
-            rlp_encode_bytes(&mut topics_inner, t.as_slice());
-        }
-        rlp_encode_list_header(&mut le, topics_inner.len());
-        le.extend_from_slice(&topics_inner);
-        rlp_encode_bytes(&mut le, &lg.data);
-        rlp_encode_list_header(&mut logs_inner, le.len());
-        logs_inner.extend_from_slice(&le);
-    }
-    rlp_encode_list_header(&mut inner, logs_inner.len());
-    inner.extend_from_slice(&logs_inner);
-    // outer receipt list
-    let mut list = Vec::new();
-    rlp_encode_list_header(&mut list, inner.len());
-    list.extend_from_slice(&inner);
-    // typed-tx prefix
-    let mut payload = Vec::new();
-    if tx_type != 0 {
-        payload.push(tx_type);
-    }
-    payload.extend_from_slice(&list);
-    blake2s(&payload)
+    rolling
 }

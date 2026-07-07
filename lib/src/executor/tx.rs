@@ -6,7 +6,7 @@
 //! come from the untrusted TxInput.
 
 use revm::context::TxEnv;
-use revm::primitives::{Address, B256, Bytes, U256};
+use revm::primitives::{B256, Bytes, U256};
 use zksync_os_revm::transaction::abstraction::ZKsyncTxBuilder;
 use zksync_os_revm::ZKsyncTx;
 

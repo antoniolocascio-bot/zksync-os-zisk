@@ -443,7 +443,7 @@ mod tests {
         let batch: BatchInput = bincode::deserialize(bincode_data).unwrap();
 
         println!("Genesis batch: chain_id={}, blocks={}", batch.chain_id, batch.blocks.len());
-        for (i, b) in batch.blocks.iter().enumerate() {
+        for (_i, b) in batch.blocks.iter().enumerate() {
             println!("  Block {}: {} txs, types: {:?}, {} account_preimages",
                 b.number, b.transactions.len(),
                 b.transactions.iter().map(|t| match &t.auth {
