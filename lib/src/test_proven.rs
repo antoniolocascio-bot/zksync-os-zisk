@@ -144,6 +144,7 @@ mod tests {
 
         // Now build a BatchInput with this proof
         let batch_input = BatchInput {
+            version: crate::types::BATCH_INPUT_VERSION,
             chain_id: 270,
             spec_id: 1, // AtlasV2
             protocol_version_minor: 30,
@@ -265,6 +266,7 @@ mod tests {
         let l1_tx_hash = alloy_primitives::keccak256(&l1_abi);
 
         let batch_input = BatchInput {
+            version: crate::types::BATCH_INPUT_VERSION,
             chain_id: 270,
             spec_id: 1,
             protocol_version_minor: 30,
@@ -379,6 +381,7 @@ mod tests {
 
         // Now build BatchInput with the fake preimage — this should panic
         let batch_input = BatchInput {
+            version: crate::types::BATCH_INPUT_VERSION,
             chain_id: 270,
             spec_id: 1,
             protocol_version_minor: 30,

@@ -3,11 +3,18 @@
 use revm::primitives::{Address, B256, U256};
 use serde::{Deserialize, Serialize};
 
+/// Current `BatchInput` wire-format version.
+pub const BATCH_INPUT_VERSION: u32 = 1;
+
 use crate::merkle::{BatchTreeUpdate, StorageProof};
 
 /// Complete batch input for the ZiSK guest.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct BatchInput {
+    /// Wire-format version. Bump on any layout change; the executor rejects
+    /// versions it does not understand. Leading field so future decoders can
+    /// read it before the rest of the payload.
+    pub version: u32,
     pub chain_id: u64,
     /// ZKsync spec version (AtlasV1 = 0, AtlasV2 = 1).
     pub spec_id: u8,

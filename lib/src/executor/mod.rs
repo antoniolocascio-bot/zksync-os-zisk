@@ -32,6 +32,13 @@ pub fn execute_and_commit_debug(input: &BatchInput) -> (BatchOutput, B256, B256,
 }
 
 fn execute_and_commit_inner(input: &BatchInput) -> (BatchOutput, B256, B256, B256, B256) {
+    assert_eq!(
+        input.version,
+        crate::types::BATCH_INPUT_VERSION,
+        "unsupported BatchInput wire-format version {} (this guest understands {})",
+        input.version,
+        crate::types::BATCH_INPUT_VERSION,
+    );
     let spec_id = match input.spec_id {
         0 => ZkSpecId::AtlasV1,
         1 => ZkSpecId::AtlasV2,
