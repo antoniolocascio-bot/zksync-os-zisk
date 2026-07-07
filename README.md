@@ -92,6 +92,30 @@ cargo-zisk verify-constraints -e <elf> -i input.bin
 ./prove_and_verify.sh --input batch.json
 ```
 
+## Reproducible guest builds
+
+The `programVK` pinned on L1 (and in the server's
+`prover_api_config.zisk_program_vk` drift tripwire) is the ROM merkle root
+of the guest ELF, so a given source revision must map to exactly one binary.
+`docker/guest-builder.Dockerfile` pins everything that influences the build:
+the base image, the cargo-zisk release (v0.18.0, which fixes the ZiSK Rust
+toolchain it installs), the pinned cargo that orchestrates it, the committed
+`guest/Cargo.lock`, and a fixed `/build` source path.
+
+```bash
+# Build in the pinned container and verify against the recorded hash
+./build-guest.sh
+
+# After an intentional guest change: rebuild, re-record, commit
+./build-guest.sh --record   # updates guest/GUEST_ELF_SHA256
+```
+
+The ELF lands in `out/zksync-os-zisk-guest`. Derive its `programVK` on a
+prover box with `cargo-zisk rom-setup -e out/zksync-os-zisk-guest` and record
+it in the server config (`zisk_program_vk`) and, at gating time, the L1
+verifier. Determinism is validated: two independent container builds
+(toolchain re-downloaded) produce byte-identical ELFs.
+
 ## Testing
 
 ```bash
