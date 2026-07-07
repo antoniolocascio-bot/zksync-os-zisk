@@ -112,7 +112,9 @@ pub struct BlockInput {
     pub block_hashes: Vec<(u64, B256)>,
     /// Merkle proofs for every storage slot accessed. Key = flat_storage_key.
     pub storage_proofs: Vec<(B256, StorageProof)>,
-    /// Block header hash (for block_hashes_blake computation).
+    /// Canonical hash of this block's header as sealed by the server.
+    /// When non-zero, the guest asserts its recomputed header hash matches,
+    /// failing re-execution loudly on any header drift.
     pub block_header_hash: B256,
     /// L2→L1 logs produced by this block's execution (from server's BlockOutput).
     /// These are included in the batch commitment's l2_to_l1_logs merkle tree.
