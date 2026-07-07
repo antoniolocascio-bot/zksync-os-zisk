@@ -1,3 +1,4 @@
+pub mod account_props;
 pub mod block_header;
 pub mod commitment;
 pub mod crypto;

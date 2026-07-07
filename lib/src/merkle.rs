@@ -465,36 +465,46 @@ impl BatchTreeUpdate {
 ///         observable_bytecode_len(4) = 124 bytes.
 #[derive(Debug, Clone)]
 pub struct AccountProperties {
+    pub versioning: u64,
     pub nonce: u64,
     pub balance: [u8; 32],
     pub bytecode_hash: B256,
     pub unpadded_code_len: u32,
+    pub artifacts_len: u32,
     pub observable_bytecode_hash: B256,
+    pub observable_bytecode_len: u32,
 }
 
 impl AccountProperties {
     pub const ENCODED_SIZE: usize = 124;
 
     pub fn decode(data: &[u8]) -> Self {
-        assert!(
-            data.len() >= Self::ENCODED_SIZE,
-            "account properties too short: {} < {}",
+        assert_eq!(
             data.len(),
-            Self::ENCODED_SIZE
+            Self::ENCODED_SIZE,
+            "account properties blob must be exactly {} bytes, got {}",
+            Self::ENCODED_SIZE,
+            data.len(),
         );
+        let versioning = u64::from_be_bytes(data[0..8].try_into().unwrap());
         let nonce = u64::from_be_bytes(data[8..16].try_into().unwrap());
         let mut balance = [0u8; 32];
         balance.copy_from_slice(&data[16..48]);
         let bytecode_hash = B256::from_slice(&data[48..80]);
         let unpadded_code_len = u32::from_be_bytes(data[80..84].try_into().unwrap());
+        let artifacts_len = u32::from_be_bytes(data[84..88].try_into().unwrap());
         let observable_bytecode_hash = B256::from_slice(&data[88..120]);
+        let observable_bytecode_len = u32::from_be_bytes(data[120..124].try_into().unwrap());
 
         Self {
+            versioning,
             nonce,
             balance,
             bytecode_hash,
             unpadded_code_len,
+            artifacts_len,
             observable_bytecode_hash,
+            observable_bytecode_len,
         }
     }
 
