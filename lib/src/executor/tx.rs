@@ -112,16 +112,12 @@ fn build_l1_upgrade_tx(
         .chain_id(input.chain_id)
         .blob_hashes(vec![]);
 
-    let refund = if refund_recipient.is_zero() {
-        None
-    } else {
-        Some(refund_recipient)
-    };
-
+    // Always pass the recipient, zero address included: the Atlas handler
+    // requires one for every L1->L2 tx, and native resolves zero itself.
     let tx = ZKsyncTxBuilder::new()
         .base(builder)
         .mint(mint)
-        .refund_recipient(refund)
+        .refund_recipient(Some(refund_recipient))
         .gas_used_override(input.gas_used_override)
         .force_fail(input.force_fail)
         .tx_hash(*tx_hash)
