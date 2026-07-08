@@ -118,11 +118,24 @@ pub(super) fn verify_tree_update(
 ) -> (B256, u64) {
     match meta.tree_update {
         Some(ref tree_update) => {
-            assert_eq!(
-                revm_writes.len(), tree_update.entries.len(),
-                "write count mismatch: computed {} writes, tree_update has {}",
-                revm_writes.len(), tree_update.entries.len(),
-            );
+            if revm_writes.len() != tree_update.entries.len() {
+                // Name the differing keys: a bare count is undebuggable.
+                let tree_keys: std::collections::HashSet<_> =
+                    tree_update.entries.iter().map(|(k, _)| *k).collect();
+                let missing: Vec<_> = tree_keys
+                    .iter()
+                    .filter(|k| !revm_writes.contains_key(*k))
+                    .collect();
+                let extra: Vec<_> = revm_writes
+                    .keys()
+                    .filter(|k| !tree_keys.contains(*k))
+                    .collect();
+                panic!(
+                    "write count mismatch: computed {} writes, tree_update has {};                      native-only keys: {missing:?}; guest-only keys: {extra:?}",
+                    revm_writes.len(),
+                    tree_update.entries.len(),
+                );
+            }
             for (key, tree_val) in &tree_update.entries {
                 let computed_val = revm_writes.get(key).unwrap_or_else(||
                     panic!("tree_update has {key} not in computed writes"));

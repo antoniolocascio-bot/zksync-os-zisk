@@ -120,7 +120,7 @@ pub(super) fn build_proven_db(input: &BatchInput) -> ProvenDB {
         let computed = crate::hash::keccak256(code);
         assert_eq!(
             computed, *hash,
-            "bytecode hash mismatch: key={hash}, keccak256={computed}"
+            "bytecode hash mismatch: key={hash}, keccak256={computed}, len={}", code.len()
         );
         bytecodes.insert(*hash, Bytecode::new_raw(Bytes::copy_from_slice(code)));
     }
