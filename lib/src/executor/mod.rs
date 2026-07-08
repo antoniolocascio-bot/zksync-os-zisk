@@ -56,20 +56,28 @@ fn execute_and_commit_inner(input: &BatchInput) -> (BatchOutput, B256, B256, B25
     let mut block_results = Vec::with_capacity(input.blocks.len());
     let mut computed_block_hashes: HashMap<u64, B256> = HashMap::new();
 
+    // Batch write set: union of the per-block net storage changes, each key
+    // carrying the value of its last change (matches the native tree update,
+    // which merges per-block diffs — including writes that net to zero
+    // against the batch pre-state).
+    let mut storage_writes: std::collections::HashMap<(revm::primitives::Address, revm::primitives::U256), revm::primitives::U256> =
+        std::collections::HashMap::new();
     for block in &input.blocks {
         verify_intra_batch_hashes(block, &computed_block_hashes);
 
-        let result = evm::execute_block_proven(
+        let (result, net_changes) = evm::execute_block_proven(
             input.chain_id, spec_id, block, &mut cache_db,
         );
         computed_block_hashes.insert(block.number, result.computed_block_header_hash);
         block_results.push(result);
+        storage_writes.extend(net_changes);
     }
 
     let output = BatchOutput { chain_id: input.chain_id, block_results };
 
     // Build complete write map (storage + 0x8003 account properties) and verify.
-    let revm_writes = verify::build_revm_write_map(&cache_db, &meta.account_preimages_after);
+    let revm_writes =
+        verify::build_revm_write_map(&storage_writes, &cache_db, &meta.account_preimages_after);
     let (tree_root_after, new_leaf_count) = verify::verify_tree_update(meta, &revm_writes);
 
     // State before.

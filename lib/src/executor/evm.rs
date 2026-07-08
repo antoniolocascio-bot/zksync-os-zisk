@@ -5,7 +5,8 @@
 
 use revm::database::CacheDB;
 use revm::primitives::{B256, U256};
-use revm::{DatabaseRef, ExecuteCommitEvm};
+use revm::{DatabaseRef, ExecuteCommitEvm, ExecuteEvm};
+use revm::primitives::Address;
 use zksync_os_revm::{DefaultZk, ZkBuilder, ZkContext, ZkSpecId};
 
 use crate::block_header;
@@ -20,8 +21,8 @@ pub(super) fn execute_block_proven(
     spec_id: ZkSpecId,
     block: &BlockInput,
     cache_db: &mut CacheDB<ProvenDB>,
-) -> BlockResult {
-    let (tx_results, tx_hashes, computed_l2_to_l1_logs) =
+) -> (BlockResult, Vec<((Address, U256), U256)>) {
+    let (tx_results, tx_hashes, computed_l2_to_l1_logs, net_storage_changes) =
         run_evm_block(chain_id, spec_id, block, cache_db);
 
     let total_gas_used: u64 = tx_results.iter().map(|t| t.gas_used).sum();
@@ -95,12 +96,15 @@ pub(super) fn execute_block_proven(
         }
     }
 
-    BlockResult {
-        block_number: block.number,
-        computed_block_header_hash: computed_header_hash,
-        tx_results,
-        l2_to_l1_logs: computed_l2_to_l1_logs,
-    }
+    (
+        BlockResult {
+            block_number: block.number,
+            computed_block_header_hash: computed_header_hash,
+            tx_results,
+            l2_to_l1_logs: computed_l2_to_l1_logs,
+        },
+        net_storage_changes,
+    )
 }
 
 /// Execute a block's transactions in the EVM and return tx results + L2→L1 logs.
@@ -110,7 +114,12 @@ fn run_evm_block<DB: DatabaseRef>(
     spec_id: ZkSpecId,
     block: &BlockInput,
     cache_db: &mut CacheDB<DB>,
-) -> (Vec<TxOutput>, Vec<B256>, Vec<L2ToL1LogEntry>)
+) -> (
+    Vec<TxOutput>,
+    Vec<B256>,
+    Vec<L2ToL1LogEntry>,
+    Vec<((Address, U256), U256)>,
+)
 where
     DB::Error: core::fmt::Debug,
 {
@@ -133,6 +142,14 @@ where
     let mut tx_results = Vec::with_capacity(block.transactions.len());
     let mut tx_hashes = Vec::with_capacity(block.transactions.len());
     let mut l2_to_l1_logs = Vec::new();
+    // Per-block write tracking: (first value seen when a slot was first
+    // changed in this block, last value it was changed to). The write SET
+    // must come from the execution journal, not from a cache-vs-pre-state
+    // diff — a slot toggled and restored across blocks nets to zero against
+    // the batch pre-state but is still a write entry in every native
+    // per-block diff (and therefore in the batch tree update).
+    let mut slot_writes: std::collections::HashMap<(Address, U256), (U256, U256)> =
+        std::collections::HashMap::new();
 
     for (tx_idx, tx_input) in block.transactions.iter().enumerate() {
         evm.0.ctx.chain.set_tx_number(tx_idx as u16);
@@ -140,8 +157,20 @@ where
         let (tx, tx_hash, _tx_type) = build_proven_tx(tx_input, block.gas_limit);
         tx_hashes.push(tx_hash);
 
-        match evm.transact_commit(tx) {
-            Ok(result) => {
+        match evm.transact(tx) {
+            Ok(result_and_state) => {
+                for (addr, account) in &result_and_state.state {
+                    for (slot, s) in &account.storage {
+                        if s.is_changed() {
+                            slot_writes
+                                .entry((*addr, *slot))
+                                .and_modify(|(_, last)| *last = s.present_value)
+                                .or_insert((s.original_value, s.present_value));
+                        }
+                    }
+                }
+                let result = result_and_state.result.clone();
+                evm.commit(result_and_state.state);
                 for log in evm.0.ctx.chain.take_logs() {
                     l2_to_l1_logs.push(L2ToL1LogEntry {
                         l2_shard_id: log.l2_shard_id,
@@ -162,5 +191,11 @@ where
         }
     }
 
-    (tx_results, tx_hashes, l2_to_l1_logs)
+    let net_changes = slot_writes
+        .into_iter()
+        .filter(|(_, (first, last))| first != last)
+        .map(|(key, (_, last))| (key, last))
+        .collect();
+
+    (tx_results, tx_hashes, l2_to_l1_logs, net_changes)
 }

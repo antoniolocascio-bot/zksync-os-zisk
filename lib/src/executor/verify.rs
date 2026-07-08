@@ -19,6 +19,7 @@ use super::proven_db::ProvenDB;
 /// after-state preimages; we verify nonce/balance match REVM output, then use
 /// blake2s(preimage) as the value.
 pub(super) fn build_revm_write_map(
+    storage_writes: &HashMap<(Address, U256), U256>,
     cache_db: &CacheDB<ProvenDB>,
     after_preimages: &[(Address, Vec<u8>)],
 ) -> HashMap<B256, B256> {
@@ -28,29 +29,22 @@ pub(super) fn build_revm_write_map(
 
     let mut writes = HashMap::new();
 
+    // Regular storage writes come from the execution journal (per-block net
+    // changes, merged batch-wide) — NOT from a cache-vs-pre-state diff,
+    // which would drop writes that net to zero across the batch while the
+    // native tree update still carries them.
+    for ((addr, slot), value) in storage_writes {
+        let slot_b256 = B256::from(slot.to_be_bytes::<32>());
+        let flat_key = merkle::derive_flat_storage_key(&addr.into_array(), &slot_b256);
+        writes.insert(flat_key, B256::from(value.to_be_bytes::<32>()));
+    }
+
     for (addr, db_account) in cache_db.cache.accounts.iter() {
         if matches!(
             db_account.account_state,
             revm::database::AccountState::None | revm::database::AccountState::NotExisting
         ) {
             continue;
-        }
-
-        // Regular storage writes.
-        let addr_bytes: [u8; 20] = addr.into_array();
-        for (slot, value) in db_account.storage.iter() {
-            let slot_u256 = U256::from_limbs((*slot).into_limbs());
-            let slot_b256 = B256::from(slot_u256.to_be_bytes::<32>());
-            let flat_key = merkle::derive_flat_storage_key(&addr_bytes, &slot_b256);
-            let old_val = proven_db.verified_storage
-                .get(&flat_key)
-                .and_then(|v| *v)
-                .map(|v| U256::from_be_bytes(v.0))
-                .unwrap_or(U256::ZERO);
-            let new_val = U256::from_limbs((*value).into_limbs());
-            if old_val != new_val {
-                writes.insert(flat_key, B256::from(new_val.to_be_bytes::<32>()));
-            }
         }
 
         // 0x8003 account-property write: witness-provided after-preimage,
@@ -101,7 +95,7 @@ pub(super) fn build_revm_write_map(
             assert_eq!(account_props::CodeFields::of(&props), expected,
                 "after-preimage code fields mismatch for {addr}");
 
-            let flat_key = merkle::derive_account_properties_key(&addr_bytes);
+            let flat_key = merkle::derive_account_properties_key(&addr.into_array());
             writes.insert(flat_key, merkle::AccountProperties::hash(after_preimage));
         }
     }
