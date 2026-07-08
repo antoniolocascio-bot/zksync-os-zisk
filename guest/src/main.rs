@@ -24,15 +24,9 @@ fn main() {
     // secp256k1 path (`secp256k1_ecdsa_address_recover_c` below).
     zksync_os_zisk_lib::crypto::install_tx_recovery_provider();
 
-    // `ziskos::io::read()` deserializes with bincode 2.x (`config::standard()`,
-    // varint), but `input.bin` was produced with bincode 1.x (fixint) by
-    // `export_proven_input_for_emulator`. Read the raw framed slice and
-    // deserialize with bincode 1.x to keep `input.bin` byte-for-byte unchanged
-    // (sha256 46531ebf…, 4296 B).
-    //
-    // v0.18.0: the zero-copy reader is `io::read_input_slice()` (returns
-    // `&[u8]` on the zkVM target). v1.0.0-alpha had renamed this to
-    // `read_slice`; v0.18.0 still uses the original `read_input_slice` name.
+    // The wire format is bincode 1.x (fixint), but `ziskos::io::read()`
+    // deserializes with bincode 2.x (varint). Read the raw framed slice
+    // (zero-copy on the zkVM target) and deserialize with bincode 1.x.
     let bytes = ziskos::io::read_input_slice();
     let batch_input: BatchInput =
         bincode::deserialize(bytes).expect("failed to deserialize BatchInput (bincode 1.x)");
@@ -40,30 +34,18 @@ fn main() {
     let (_output, commitment) = executor::execute_and_commit(&batch_input);
     let hash_bytes: [u8; 32] = commitment.into();
 
-    // v1.0.0-alpha migration: commit the raw 32-byte keccak output. In v0.16.1
-    // `io::commit` wrote bytes as u32 LE chunks, so the guest pre-swapped each
-    // 4-byte group. `commit_slice` writes the byte stream directly; verify the
-    // public-values byte order against the reference commitment (0x891b61c0…)
-    // after emulation and re-introduce a swap here only if it comes out swapped.
+    // `commit_slice` writes the byte stream directly (no u32-LE re-chunking),
+    // so the committed public values are the keccak output verbatim.
     ziskos::io::commit_slice(&hash_bytes);
 }
 
-// ---------------------------------------------------------------------------
-// Crypto precompile shims (v1.0.0-alpha migration).
-//
-// `zksync-os-zisk-lib::crypto::CustomEvmCrypto` calls the C-ABI symbols below
-// on the ZiSK target. In v0.16.1 these were provided by a patched
-// `zksync-os-revm` (an uncommitted `/tmp/zksync-os-revm-patched`); they are not
-// present in the v1.0.0-alpha toolchain or any committed crate. v1.0.0-alpha
-// exposes equivalent operations as Rust functions under `ziskos::zisklib`.
-//
-// The synthetic `force_fail` batch performs almost no EVM execution and is not
-// expected to invoke any of these precompiles. We provide them as identifying
-// panic-stubs so the ELF links; anything the batch actually exercises will
-// panic under `ziskemu`, at which point it gets a real `ziskos::zisklib`-backed
-// implementation. keccak256 is unaffected (routed via the tiny-keccak patch /
-// native-keccak) and is NOT stubbed here.
-// ---------------------------------------------------------------------------
+// `zksync-os-zisk-lib::crypto::CustomEvmCrypto` calls these C-ABI symbols on
+// the ZiSK target; they must exist for the ELF to link. Precompiles that no
+// proven batch has exercised yet are self-identifying panic-stubs: a batch
+// that hits one fails loudly under `ziskemu`, at which point the stub gets a
+// real implementation backed by `ziskos::zisklib` (as ecrecover below did).
+// keccak256 is not stubbed — it routes through the tiny-keccak patch to the
+// native-keccak syscall.
 macro_rules! precompile_stub {
     ($name:ident ( $($arg:ident : $ty:ty),* ) $(-> $ret:ty)?) => {
         #[no_mangle]
@@ -95,18 +77,12 @@ precompile_stub!(bls12_381_pairing_check_c(pairs: *const u8, num_pairs: usize) -
 precompile_stub!(bls12_381_fp_to_g1_c(ret: *mut u8, fp: *const u8) -> u8);
 precompile_stub!(bls12_381_fp2_to_g2_c(ret: *mut u8, fp2: *const u8) -> u8);
 
-// ---------------------------------------------------------------------------
-// Accelerated secp256k1 ECDSA public-key/address recovery.
-//
-// `zksync-os-zisk-lib::crypto::impls` calls this C-ABI symbol on the ZiSK
-// target from BOTH the REVM `Crypto::secp256k1_ecrecover` precompile and
-// alloy-consensus's `CryptoProvider::recover_signer_unchecked` (transaction
-// recovery). Unlike the panic-stubs above, this one is exercised by real
-// batches (every L2 tx signature), so it is a genuine implementation backed
-// by ziskos's accelerated secp256k1 circuits.
-// ---------------------------------------------------------------------------
-
 /// Recover the signer's Ethereum-address hash from an ECDSA signature.
+///
+/// Called on the ZiSK target from both the REVM `secp256k1_ecrecover`
+/// precompile and alloy-consensus's transaction signer recovery — every L2
+/// tx signature goes through here, so unlike the stubs above this is a real
+/// implementation backed by ziskos's accelerated secp256k1 circuits.
 ///
 /// `sig` points to 64 bytes (r ‖ s, big-endian), `recid` is the y-parity
 /// (0 or 1), `msg` points to the 32-byte prehash. On success `output[0..32]`

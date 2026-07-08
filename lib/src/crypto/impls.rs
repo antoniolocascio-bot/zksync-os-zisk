@@ -461,7 +461,8 @@ impl Crypto for CustomEvmCrypto {
         &self,
         pairs: &mut dyn Iterator<Item = Result<G1PointScalar, PrecompileHalt>>,
     ) -> Result<[u8; 96], PrecompileHalt> {
-        // TODO: Review if it's a better way to do this to avoid borrowing issues with pairs
+        // Collect up front: the iterator is consumed twice otherwise (length
+        // check + element access) and items are fallible.
         let mut collected: Vec<G1PointScalar> = Vec::new();
         for pair in pairs {
             collected.push(pair?);
@@ -569,7 +570,8 @@ impl Crypto for CustomEvmCrypto {
         &self,
         pairs: &mut dyn Iterator<Item = Result<G2PointScalar, PrecompileHalt>>,
     ) -> Result<[u8; 192], PrecompileHalt> {
-        // TODO: Review if it's a better way to do this to avoid borrowing issues with pairs
+        // Collect up front: the iterator is consumed twice otherwise (length
+        // check + element access) and items are fallible.
         let mut collected: Vec<G2PointScalar> = Vec::new();
         for pair in pairs {
             collected.push(pair?);

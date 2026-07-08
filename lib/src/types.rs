@@ -5,10 +5,10 @@ use serde::{Deserialize, Serialize};
 
 /// Current `BatchInput` wire-format version.
 ///
-/// **v2 (2026-07-07)**: adds `TxAuth::System` (system transactions — interop
+/// **v2**: adds `TxAuth::System` (system transactions — interop
 /// root imports, SL-chain-id updates, interop fee updates — carried as their
 /// EIP-2718 encoding and authenticated by `keccak256(encoded) == tx_hash`).
-/// v1 (frozen 2026-07-07) is otherwise unchanged. The wire format is
+/// v1 is otherwise unchanged. The wire format is
 /// bincode 1.x (non-self-describing, positional, little-endian) over the
 /// structs in this module, framed for the ZiSK guest as
 /// `[len: u64 LE][bincode][zero pad to 8]`. Every field is required; there
@@ -196,10 +196,6 @@ impl L2ToL1LogEntry {
         buf
     }
 }
-
-// ---------------------------------------------------------------------------
-// Output types
-// ---------------------------------------------------------------------------
 
 #[derive(Serialize, Deserialize)]
 pub struct BatchOutput {

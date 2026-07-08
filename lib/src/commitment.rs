@@ -102,26 +102,6 @@ pub fn l2_to_l1_logs_root(encoded_logs: &[[u8; L2_TO_L1_LOG_SIZE]]) -> B256 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Batch output hash
-// ---------------------------------------------------------------------------
-
-/// Compute the batch output hash, matching zksync-os draft-0.4.0
-/// `BatchOutput::hash` (basic_bootloader .../zk/post_tx_op/public_input.rs)
-/// BYTE-FOR-BYTE. Encoding, in order:
-///   first_block_timestamp (u64 BE, 8 bytes)
-///   last_block_timestamp  (u64 BE, 8 bytes)
-///   [0u8;31] || da_commitment_scheme    (32 bytes)
-///   pubdata_commitment / da_commitment  (32 bytes)
-///   number_of_layer_1_txs (U256 BE, 32 bytes)
-///   number_of_layer_2_txs (U256 BE, 32 bytes)
-///   priority_operations_hash            (32 bytes)
-///   l2_logs_tree_root                   (32 bytes)
-///   upgrade_tx_hash                     (32 bytes)
-///   interop_roots_rolling_hash          (32 bytes)
-///   settlement_layer_chain_id (U256 BE, 32 bytes)
-/// Note: there is NO chain_id word (the stale v30/v31 variants prepended one).
-#[allow(clippy::too_many_arguments)]
 /// Released-line batch output hash layouts, mirroring the native
 /// `PendingBatchInfo::public_input_hash` (zksync-os-server `batch_info.rs`,
 /// abi-packed):

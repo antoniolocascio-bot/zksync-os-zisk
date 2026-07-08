@@ -136,7 +136,7 @@ Keep new logic in `lib/` so a second zkVM backend stays cheap.
 A validated OpenVM (RV32IM) guest for this same lib is preserved on the
 `backup/openvm-main` branch (`guest-openvm/`): it reproduced the reference
 `BatchPublicInput` end-to-end and proved via app STARK → Halo2/KZG SNARK
-(~3.9 KB) in the 2026-07 benchmark. To revive it: cherry-pick `guest-openvm/`
+(~3.9 KB) in the multi-prover benchmark. To revive it: cherry-pick `guest-openvm/`
 from that branch, re-pin its `openvm` crates (v2.0.0-beta.2 at the time), and
 re-run the lib's `test_proven` reader against `cargo openvm run` output.
 Inputs are passed as type-prefixed hex (`01` + hex via `--input`, JSON file
