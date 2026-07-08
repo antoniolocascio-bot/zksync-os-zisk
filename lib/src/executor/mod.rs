@@ -154,9 +154,13 @@ fn execute_and_commit_inner(input: &BatchInput) -> (BatchOutput, B256, B256, B25
         _ => panic!("unsupported DA commitment scheme: {}", meta.da_commitment_scheme),
     };
 
-    // Batch output hash — matches zksync-os draft-0.4.0 `BatchOutput::hash`
-    // (single canonical layout; the old v30/v31 chain_id-prefixed variants were stale).
+    // Batch output hash — released-line layouts, version-gated by spec:
+    // AtlasV3 chains use the v31 packing (layer-2 tx count + sl chain id),
+    // earlier specs the v30 packing. Both are chain_id-prefixed; the
+    // draft-0.4.0 chain_id-less layout returns at the AtlasV4 bump.
     let batch_hash = commitment::batch_output_hash_native(
+        matches!(spec_id, ZkSpecId::AtlasV3),
+        input.chain_id,
         input.blocks.first().unwrap().timestamp,
         last_block.timestamp,
         meta.da_commitment_scheme,

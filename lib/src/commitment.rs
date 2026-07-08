@@ -122,7 +122,20 @@ pub fn l2_to_l1_logs_root(encoded_logs: &[[u8; L2_TO_L1_LOG_SIZE]]) -> B256 {
 ///   settlement_layer_chain_id (U256 BE, 32 bytes)
 /// Note: there is NO chain_id word (the stale v30/v31 variants prepended one).
 #[allow(clippy::too_many_arguments)]
+/// Released-line batch output hash layouts, mirroring the native
+/// `PendingBatchInfo::public_input_hash` (zksync-os-server `batch_info.rs`,
+/// abi-packed):
+/// - **v30** (AtlasV1/V2): `(chain_id, first_ts, last_ts, da_scheme,
+///   da_commitment, n_l1_txs, priority_ops_hash, l2_to_l1_logs_root,
+///   upgrade_tx_hash, dependency_roots_rolling_hash)` — no layer-2 tx count,
+///   no settlement-layer chain id.
+/// - **v31** (AtlasV3): inserts `n_l2_txs` after `n_l1_txs` and appends
+///   `sl_chain_id`.
+/// The draft-0.4.0 chain_id-less layout returns at the AtlasV4 bump.
+#[allow(clippy::too_many_arguments)]
 pub fn batch_output_hash_native(
+    v31_layout: bool,
+    chain_id: u64,
     first_block_timestamp: u64,
     last_block_timestamp: u64,
     da_commitment_scheme: u8,
@@ -135,7 +148,10 @@ pub fn batch_output_hash_native(
     interop_roots_rolling_hash: &B256,
     settlement_layer_chain_id: u64,
 ) -> B256 {
-    let mut data = Vec::with_capacity(304);
+    let mut data = Vec::with_capacity(336);
+    // chain_id as U256 BE
+    data.extend_from_slice(&[0u8; 24]);
+    data.extend_from_slice(&chain_id.to_be_bytes());
     data.extend_from_slice(&first_block_timestamp.to_be_bytes());
     data.extend_from_slice(&last_block_timestamp.to_be_bytes());
     data.extend_from_slice(&[0u8; 31]);
@@ -144,16 +160,20 @@ pub fn batch_output_hash_native(
     // number_of_layer_1_txs as U256 BE (24 zero bytes + u64 BE)
     data.extend_from_slice(&[0u8; 24]);
     data.extend_from_slice(&number_of_layer1_txs.to_be_bytes());
-    // number_of_layer_2_txs as U256 BE
-    data.extend_from_slice(&[0u8; 24]);
-    data.extend_from_slice(&number_of_layer2_txs.to_be_bytes());
+    if v31_layout {
+        // number_of_layer_2_txs as U256 BE
+        data.extend_from_slice(&[0u8; 24]);
+        data.extend_from_slice(&number_of_layer2_txs.to_be_bytes());
+    }
     data.extend_from_slice(priority_operations_hash.as_slice());
     data.extend_from_slice(l2_to_l1_logs_root_hash.as_slice());
     data.extend_from_slice(upgrade_tx_hash.as_slice());
     data.extend_from_slice(interop_roots_rolling_hash.as_slice());
-    // settlement_layer_chain_id as U256 BE
-    data.extend_from_slice(&[0u8; 24]);
-    data.extend_from_slice(&settlement_layer_chain_id.to_be_bytes());
+    if v31_layout {
+        // settlement_layer_chain_id as U256 BE
+        data.extend_from_slice(&[0u8; 24]);
+        data.extend_from_slice(&settlement_layer_chain_id.to_be_bytes());
+    }
     keccak256(&data)
 }
 
