@@ -27,10 +27,10 @@ source ~/.bashrc
 mkdir ~/zksync-os-second-proof-system && cd ~/zksync-os-second-proof-system
 
 # Main ZiSK proof system
-git clone https://github.com/vladbochok/zksync-os-zisk
+git clone -b dev https://github.com/antoniolocascio-bot/zksync-os-zisk
 
 # Server (for integration tests, optional on this machine)
-git clone -b vb/second-proof-system https://github.com/vladbochok/zksync-os-server
+git clone -b dev https://github.com/antoniolocascio-bot/zksync-os-server
 ```
 
 ## Step 3: Run the full proof pipeline
@@ -51,20 +51,6 @@ This runs 8 stages:
 6. STARK aggregation + compression (vadcop_final) — **needs 64GB RAM + GPU**
 7. SNARK wrapping (Plonk proof) — **needs SNARK proving key**
 8. Solidity verification
-
-Stage 4 will fail on the default sample input because it generates an L2 transaction without signed bytes. Use the proven input instead:
-
-```bash
-cd ~/zksync-os-second-proof-system/zksync-os-zisk/lib
-cargo +nightly-2026-02-10 test -p zksync-os-zisk-lib export_proven_input_for_emulator -- --nocapture
-cp /tmp/proven_input.bin /tmp/zisk_e2e/input.bin
-```
-
-Then resume from stage 4:
-```bash
-cd ~/zksync-os-second-proof-system/zksync-os-zisk
-ZISK_WORK_DIR=/tmp/zisk_e2e ./prove_and_verify.sh --stage 4
-```
 
 ## Step 4: If stage 6 skips (SNARK proving key missing)
 
@@ -106,7 +92,7 @@ ls /tmp/zisk_e2e/snark_proof/
 Once you have the SNARK proof from stage 7, update the ZiSK verifier in era-contracts:
 
 ```bash
-cd ~/zksync-os-second-proof-system/era-contracts/tools/verifier-gen
+cd ~/zksync-os-second-proof-system/era-contracts/tools
 
 # Update ZiSK_vk.json with new programVK (from rom-setup output)
 # Then regenerate:

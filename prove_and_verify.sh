@@ -27,24 +27,25 @@ set -euo pipefail
 #   Stage 8:    Minimal (Solidity test)
 #
 # Usage:
-#   ./prove_and_verify.sh [--input /path/to/batch.json] [--stage N]
+#   ./prove_and_verify.sh [--input /path/to/input.bin] [--stage N]
 #
 # --stage N: start from stage N (skips earlier stages, uses cached artifacts)
-# Without --input, generates a sample batch.
+# --input: a framed ZiSK BatchInput (batch dump or repro bundle).
+# Without --input, exports the lib's sample proven batch.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GUEST_DIR="$SCRIPT_DIR/guest"
-HOST_DIR="$SCRIPT_DIR/host"
+LIB_DIR="$SCRIPT_DIR/lib"
 CONTRACTS_DIR="$SCRIPT_DIR/contracts"
 WORK_DIR="${ZISK_WORK_DIR:-/tmp/zisk_pipeline}"
 export PATH="$HOME/.zisk/bin:$PATH"
 
 # Parse args
-INPUT_JSON=""
+INPUT_BIN=""
 START_STAGE=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --input) INPUT_JSON="$2"; shift 2 ;;
+        --input) INPUT_BIN="$2"; shift 2 ;;
         --stage) START_STAGE="$2"; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
@@ -66,16 +67,18 @@ if [ "$START_STAGE" -le 1 ]; then
 fi
 
 # ─── Stage 2: Prepare input ─────────────────────────────────────────
+# Accepts a ready ZiSK input via --input (a `ZISK_DUMP_DIR` batch dump or a
+# divergence repro bundle); otherwise exports the lib's minimal proven-path
+# sample.
 if [ "$START_STAGE" -le 2 ]; then
-    if [ -z "$INPUT_JSON" ]; then
-        echo "[2/8] Generating sample batch input..."
-        (cd "$HOST_DIR" && cargo +nightly-2026-02-10 run --release -- sample -o "$WORK_DIR/batch.json" 2>&1 | tail -1)
-        INPUT_JSON="$WORK_DIR/batch.json"
+    if [ -z "$INPUT_BIN" ]; then
+        echo "[2/8] Exporting the sample proven batch input..."
+        (cd "$LIB_DIR" && cargo test --release export_proven_input_for_emulator -- --nocapture 2>&1 | tail -1)
+        cp /tmp/proven_input.bin "$WORK_DIR/input.bin"
     else
-        echo "[2/8] Using provided input: $INPUT_JSON"
+        echo "[2/8] Using provided input: $INPUT_BIN"
+        cp "$INPUT_BIN" "$WORK_DIR/input.bin"
     fi
-    echo "  Preparing ZiSK binary input..."
-    (cd "$HOST_DIR" && cargo +nightly-2026-02-10 run --release -- prepare -i "$INPUT_JSON" -o "$WORK_DIR/input.bin" 2>&1 | tail -1)
 fi
 
 # ─── Stage 3: ROM setup ─────────────────────────────────────────────
