@@ -72,6 +72,25 @@ struct Args {
     /// Prometheus metrics listen address.
     #[arg(long, default_value = "0.0.0.0:3313")]
     metrics_address: String,
+
+    /// Prover identity reported to the sequencer's job API. Used for
+    /// assignment attribution in fleet deployments; defaults to the machine
+    /// hostname so concurrent daemons are distinguishable in server logs.
+    #[arg(long)]
+    prover_id: Option<String>,
+}
+
+/// Resolve the prover identity: explicit flag, else hostname, else a fixed
+/// fallback.
+fn resolve_prover_id(args: &Args) -> String {
+    if let Some(ref id) = args.prover_id {
+        return id.clone();
+    }
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| "zisk_prover".to_string())
 }
 
 fn load_supported_vk_hashes(args: &Args) -> Vec<String> {
@@ -111,8 +130,10 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
     let supported_vks = load_supported_vk_hashes(&args);
+    let prover_id = resolve_prover_id(&args);
 
     tracing::info!(
+        prover_id = %prover_id,
         sequencer_url = %args.sequencer_url,
         zisk_binary = %args.zisk_binary.display(),
         elf_path = %args.elf_path.display(),
@@ -137,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(exporter.start(metrics_addr));
     tracing::info!(address = %metrics_addr, "metrics server started");
 
-    let client = sequencer_client::SequencerClient::new(&args.sequencer_url, "zisk_prover")?;
+    let client = sequencer_client::SequencerClient::new(&args.sequencer_url, &prover_id)?;
     tracing::info!(url = client.url(), "connected to sequencer");
 
     let prover = prover::ZiskProver::new(

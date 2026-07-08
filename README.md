@@ -110,6 +110,7 @@ cargo run --release -- \
 | `--supported-vk` | (none) | Accepted VK hashes. Repeatable. Empty = accept all. |
 | `--vk-hashes-file` | (none) | File with VK hashes (one per line, # comments). |
 | `--metrics-address` | `0.0.0.0:3313` | Prometheus metrics endpoint. |
+| `--prover-id` | hostname | Identity reported to the sequencer's job API; shows up in server-side assignment/reassignment logs. |
 
 ### Metrics
 
@@ -120,6 +121,48 @@ Prometheus metrics are served at `--metrics-address` (default `:3313`):
 | `zisk_prover_http_latency` | Histogram | HTTP pick/submit latency |
 | `zisk_prover_proof_generation_time` | Histogram | Total proof time per batch |
 | `zisk_prover_prove_time` | Histogram | `cargo-zisk prove` subprocess time (STARK + PLONK wrap) |
+| `zisk_prover_program_setup_time` | Histogram | One-time per-ELF `program-setup` duration |
+| `zisk_prover_proofs` | Counter | Proof attempts by outcome (success/failure/cancelled) |
+
+## Fleet deployment (multiple GPUs / machines)
+
+The sequencer's ZiSK job API is a job market: each daemon independently picks
+a batch, proves it, and submits. Scaling out is running more daemons — the
+server handles concurrent picks, per-assignment timeouts, and reassignment of
+jobs whose prover disappeared. There is no coordination between daemons.
+
+One daemon per GPU:
+
+```bash
+# Machine A, GPU 0
+CUDA_VISIBLE_DEVICES=0 zksync-os-zisk-prover-service \
+  --sequencer-url http://sequencer:3124 \
+  --work-dir /tmp/zisk_proofs_gpu0 --metrics-address 0.0.0.0:3313 \
+  --zisk-binary ... --elf-path ... --proving-key ... --proving-key-plonk ...
+
+# Machine A, GPU 1 — distinct work dir and metrics port
+CUDA_VISIBLE_DEVICES=1 zksync-os-zisk-prover-service \
+  --sequencer-url http://sequencer:3124 \
+  --work-dir /tmp/zisk_proofs_gpu1 --metrics-address 0.0.0.0:3314 \
+  --prover-id machine-a-gpu1 \
+  ...
+```
+
+Per-daemon requirements on a shared box: a distinct `--work-dir` (proof
+scratch would collide), a distinct `--metrics-address` port, and
+`CUDA_VISIBLE_DEVICES` pinning one GPU per daemon. `--prover-id` defaults to
+the hostname; set it explicitly when several daemons share a machine.
+
+Per-box (shared between daemons): the proving keys, the guest ELF, and the
+`program-setup` cache — run one daemon first to completion of program-setup,
+or pre-run `cargo-zisk rom-setup`, before starting the rest.
+
+Server side: set the sequencer's ZiSK assignment timeout comfortably above
+the worst-case proving time for your batch sizes, or jobs will be reassigned
+mid-proof and the late submission rejected as `UnknownJob` (harmless, but
+wasted work). Fleet members running a stale guest build are caught by the
+server's VK drift tripwire (`zisk_lane_vk_drift`) when `zisk_program_vk` is
+configured.
 
 ## License
 
