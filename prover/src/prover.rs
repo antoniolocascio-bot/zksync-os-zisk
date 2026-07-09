@@ -15,7 +15,12 @@ use tokio_util::sync::CancellationToken;
 use crate::metrics::ZISK_PROVER_METRICS;
 
 const ZISK_SNARK_PROOF_BYTES: usize = 768;
-const ZISK_PUBLIC_VALUES_BYTES: usize = 256;
+// programVK(32) + guest publics(256: ziskos's full 64-word output region,
+// the guest's 8 commitment words first, zeros after) + vadcopVK(32).
+// A real cargo-zisk v0.18 proof file carries the full 256-byte publics
+// region (draft-era code assumed 192 — settled by the first real parse,
+// plan item 2.1; regression-tested against a committed real proof file).
+const ZISK_PUBLIC_VALUES_BYTES: usize = 320;
 /// Number of u64 words in the guest-ELF ROM root (program VK) and in the
 /// vadcop-final verification key.
 const PROGRAM_VK_LEN: usize = 4;
@@ -283,12 +288,12 @@ struct ZiskProgramVk {
 
 /// Extract `(proof, public_values)` in the server's wire format:
 /// - proof: the 768-byte BN254 PLONK SNARK.
-/// - public_values (256 bytes): `program_vk (32B, u64 BE) ‖ publics.data
-///   (192B) ‖ vadcop_final_vk (32B, u64 BE)` — the exact preimage of the
+/// - public_values (320 bytes): `program_vk (32B, u64 BE) ‖ publics.data
+///   (256B) ‖ vadcop_final_vk (32B, u64 BE)` — the exact preimage of the
 ///   circuit's single public signal (`sha256(...) % r`), matching
 ///   zisk-common's `PublicValues::bytes_solidity` and the on-chain
 ///   `ZiskVerifier` digest reconstruction.
-fn parse_proof_file(path: &Path) -> anyhow::Result<ZiskSnarkOutput> {
+pub fn parse_proof_file(path: &Path) -> anyhow::Result<ZiskSnarkOutput> {
     let data = std::fs::read(path)?;
     let (proof_file, consumed): (ZiskProofFile, usize) =
         bincode::serde::decode_from_slice(&data, bincode::config::standard())

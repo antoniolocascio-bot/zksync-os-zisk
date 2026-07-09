@@ -4,9 +4,7 @@
 //! generates STARK + SNARK proofs using `cargo-zisk`, and submits the
 //! results back to the server for multi-proof composition.
 
-mod metrics;
-mod prover;
-mod sequencer_client;
+use zksync_os_zisk_prover_service::{metrics, prover, sequencer_client};
 
 use clap::Parser;
 use std::path::PathBuf;
