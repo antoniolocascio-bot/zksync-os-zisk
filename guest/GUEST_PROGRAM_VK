@@ -1,0 +1,9 @@
+# programVK (ZiSK ROM merkle root) of the reproducible guest ELF.
+# Derived 2026-07-09 via `cargo-zisk program-setup` (ZiSK v0.18.0) on the ELF
+# with sha256 c7d8e7ddb85a69a10550e8805e3c8e549083c17589b4af6eaab679e5c787d40f
+# (see GUEST_ELF_SHA256). Serialization: the four ROM root-hash u64 limbs,
+# big-endian, in order — identical to the prover daemon's public-values
+# prefix and the server's `prover_api.zisk_program_vk` expectation.
+# Root hash limbs: [10111220224345192098, 9826737546388034106,
+#                   8246419230006082628, 13613769626437492696]
+0x8c524538f5d736a2885f95bbf173d23a72712a9929767c44bcedd358adcf1fd8
