@@ -400,8 +400,8 @@ mod tests {
         assert_eq!(out.public_values.len(), ZISK_PUBLIC_VALUES_BYTES);
         // program VK words big-endian first, then publics data, then vadcop VK.
         assert_eq!(&out.public_values[..8], 0x1111_2222_3333_4444u64.to_be_bytes().as_slice());
-        assert_eq!(out.public_values[32..224], publics_data[..]);
-        assert_eq!(&out.public_values[224..232], 0xaaaa_bbbb_cccc_ddddu64.to_be_bytes().as_slice());
+        assert_eq!(out.public_values[32..288], publics_data[..]);
+        assert_eq!(&out.public_values[288..296], 0xaaaa_bbbb_cccc_ddddu64.to_be_bytes().as_slice());
     }
 
     #[test]
