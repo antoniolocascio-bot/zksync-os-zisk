@@ -428,6 +428,233 @@ mod tests {
         println!("Correctly caught fake account preimage!");
     }
 
+    /// Dense tree over MIN/MAX guards + data leaves with a correct sorted
+    /// linked list. Returns (root, all leaves by index, per-leaf sibling paths).
+    fn build_dense_tree(
+        data: &[(B256, B256)],
+    ) -> (B256, Vec<(u64, TreeLeaf)>, Vec<Vec<B256>>) {
+        // Indices: 0 = MIN guard, 1 = MAX guard, 2.. = data in given order.
+        let mut recs: Vec<(u64, B256, B256)> = vec![
+            (0, B256::ZERO, B256::ZERO),
+            (1, B256::repeat_byte(0xff), B256::ZERO),
+        ];
+        for (i, (k, v)) in data.iter().enumerate() {
+            recs.push((2 + i as u64, *k, *v));
+        }
+        // next pointers follow key order; MAX guard self-loops.
+        let mut order: Vec<usize> = (0..recs.len()).collect();
+        order.sort_by(|&a, &b| recs[a].1.cmp(&recs[b].1));
+        let mut next = vec![0u64; recs.len()];
+        for w in order.windows(2) {
+            next[w[0]] = recs[w[1]].0;
+        }
+        next[*order.last().unwrap()] = 1;
+
+        let leaves: Vec<(u64, TreeLeaf)> = recs
+            .iter()
+            .zip(&next)
+            .map(|((idx, k, v), n)| (*idx, TreeLeaf { key: *k, value: *v, next_index: *n }))
+            .collect();
+
+        // Dense levels bottom-up.
+        let mut levels: Vec<Vec<B256>> = vec![leaves
+            .iter()
+            .map(|(_, l)| hash_leaf(&l.key, &l.value, l.next_index))
+            .collect()];
+        while levels.last().unwrap().len() > 1 {
+            let d = levels.len() - 1;
+            let cur = levels.last().unwrap();
+            let next_level: Vec<B256> = (0..cur.len().div_ceil(2))
+                .map(|i| {
+                    let l = cur[2 * i];
+                    let r = cur.get(2 * i + 1).copied().unwrap_or(empty_subtree_hash(d as u8));
+                    blake2s_compress_pub(&l, &r)
+                })
+                .collect();
+            levels.push(next_level);
+        }
+        let mut root = levels.last().unwrap()[0];
+        for d in (levels.len() - 1)..(TREE_DEPTH as usize) {
+            root = blake2s_compress_pub(&root, &empty_subtree_hash(d as u8));
+        }
+
+        let siblings: Vec<Vec<B256>> = (0..leaves.len() as u64)
+            .map(|i| {
+                (0..TREE_DEPTH as usize)
+                    .map(|d| {
+                        let pos = ((i >> d) ^ 1) as usize;
+                        levels
+                            .get(d)
+                            .and_then(|lvl| lvl.get(pos).copied())
+                            .unwrap_or(empty_subtree_hash(d as u8))
+                    })
+                    .collect()
+            })
+            .collect();
+        (root, leaves, siblings)
+    }
+
+    /// Production fee semantics: the operator (coinbase) is credited the FULL
+    /// effective gas price per unit of gas used. Production zksync-os is built
+    /// WITHOUT the `burn_base_fee` cargo feature (the server pins
+    /// forward_system with `features = ["production", "no_print"]`), so there
+    /// is no EIP-1559-style base-fee burn — see basic_bootloader
+    /// transaction_flow/zk/mod.rs, non-burn branch of `gas_price_for_operator`.
+    ///
+    /// gas_price 10 vs base_fee 7 makes the two models distinguishable:
+    /// full price credits 10/gas, mainnet burn semantics would credit 3/gas.
+    /// A guest regression to burn semantics fails this test both ways.
+    #[test]
+    fn coinbase_reward_is_full_effective_gas_price() {
+        use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
+        use alloy_eips::eip2718::Encodable2718;
+        use k256::ecdsa::SigningKey;
+
+        // Deterministic sender key.
+        let sk = SigningKey::from_bytes((&[0x42u8; 32]).into()).unwrap();
+        let pubkey = sk.verifying_key().to_encoded_point(false);
+        let sender = Address::from_slice(
+            &alloy_primitives::keccak256(&pubkey.as_bytes()[1..])[12..],
+        );
+        let coinbase: Address = "0x00000000000000000000000000000000c01badde".parse().unwrap();
+
+        const GAS_PRICE: u64 = 10;
+        const BASE_FEE: u64 = 7;
+        const GAS_USED: u64 = 21_000;
+        let sender_balance_before = U256::from(1_000_000_000_000_000_000u128);
+        let coinbase_balance_before = U256::from(5u64);
+
+        // Signed legacy self-transfer (value 0), gas_price 10.
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: GAS_PRICE as u128,
+            gas_limit: 100_000,
+            to: alloy_primitives::TxKind::Call(sender),
+            value: U256::ZERO,
+            input: Default::default(),
+        };
+        let sighash = tx.signature_hash();
+        let (sig, recid) = sk.sign_prehash_recoverable(sighash.as_slice()).unwrap();
+        let sig_bytes = sig.to_bytes();
+        let signature = alloy_primitives::Signature::new(
+            U256::from_be_slice(&sig_bytes[..32]),
+            U256::from_be_slice(&sig_bytes[32..]),
+            recid.is_y_odd(),
+        );
+        let envelope = TxEnvelope::Legacy(tx.into_signed(signature));
+        let mut signed_bytes = Vec::new();
+        envelope.encode_2718(&mut signed_bytes);
+
+        // Pre-state tree: sender + coinbase as existing accounts.
+        let sender_props = encode_account_props(0, sender_balance_before);
+        let coinbase_props = encode_account_props(0, coinbase_balance_before);
+        let k_sender = derive_account_properties_key(&sender.into_array());
+        let k_coinbase = derive_account_properties_key(&coinbase.into_array());
+        let (root, leaves, siblings) = build_dense_tree(&[
+            (k_sender, AccountProperties::hash(&sender_props)),
+            (k_coinbase, AccountProperties::hash(&coinbase_props)),
+        ]);
+
+        let proof_for = |idx: u64| {
+            let (_, leaf) = &leaves[idx as usize];
+            StorageProof::Existing(SlotProofEntry {
+                index: idx,
+                value: leaf.value,
+                next_index: leaf.next_index,
+                siblings: siblings[idx as usize].clone(),
+            })
+        };
+
+        // Build the batch for a given claimed after-state of the coinbase.
+        let fee = U256::from(GAS_USED) * U256::from(GAS_PRICE as u128);
+        let build = |coinbase_balance_after: U256| -> BatchInput {
+            let sender_after = encode_account_props(1, sender_balance_before - fee);
+            let coinbase_after = encode_account_props(0, coinbase_balance_after);
+            let tree_update = BatchTreeUpdate {
+                operations: vec![WriteOp::Update { index: 2 }, WriteOp::Update { index: 3 }],
+                entries: vec![
+                    (k_sender, AccountProperties::hash(&sender_after)),
+                    (k_coinbase, AccountProperties::hash(&coinbase_after)),
+                ],
+                sorted_leaves: leaves.clone(),
+                intermediate_hashes: vec![],
+                leaf_count_before: 4,
+            };
+            BatchInput {
+                version: crate::types::BATCH_INPUT_VERSION,
+                chain_id: 1,
+                spec_id: 2, // AtlasV3
+                protocol_version_minor: 31,
+                batch_meta: BatchMeta {
+                    tree_root_before: root,
+                    leaf_count_before: 4,
+                    block_number_before: 0,
+                    last_block_timestamp_before: 0,
+                    block_hashes_blake_before: B256::ZERO,
+                    previous_block_hashes: vec![],
+                    upgrade_tx_hash: B256::ZERO,
+                    da_commitment_scheme: 2,
+                    pubdata: vec![],
+                    multichain_root: B256::ZERO,
+                    sl_chain_id: 1,
+                    blob_versioned_hashes: vec![],
+                    tree_update: Some(tree_update),
+                    account_preimages_after: vec![
+                        (sender, sender_after.clone()),
+                        (coinbase, coinbase_after.clone()),
+                    ],
+                    fri_proof_verification_enabled: false,
+                    max_tx_gas_limit: 1 << 24,
+                },
+                blocks: vec![BlockInput {
+                    number: 1,
+                    timestamp: 1700000000,
+                    base_fee: BASE_FEE,
+                    gas_limit: 1_000_000,
+                    coinbase,
+                    prev_randao: B256::from([1u8; 32]),
+                    block_header_hash: B256::ZERO,
+                    storage_proofs: vec![(k_sender, proof_for(2)), (k_coinbase, proof_for(3))],
+                    account_preimages: vec![
+                        (sender, sender_props.clone()),
+                        (coinbase, coinbase_props.clone()),
+                    ],
+                    transactions: vec![TxInput {
+                        chain_id: Some(1),
+                        gas_used_override: Some(GAS_USED),
+                        force_fail: false,
+                        auth: TxAuth::L2 { signed_bytes: signed_bytes.clone() },
+                    }],
+                    block_hashes: vec![],
+                    l2_to_l1_logs: vec![],
+                    expected_tree_root: B256::ZERO,
+                }],
+                bytecodes: vec![],
+            }
+        };
+
+        // Full-price credit must verify end to end.
+        let full_price = build(coinbase_balance_before + fee);
+        let (output, _commitment) = executor::execute_and_commit(&full_price);
+        let tx_out = &output.block_results[0].tx_results[0];
+        assert!(tx_out.success, "self-transfer must succeed");
+        assert_eq!(tx_out.gas_used, GAS_USED);
+
+        // Mainnet burn semantics (tip-only credit) must be REJECTED: a witness
+        // claiming coinbase += gas_used * (effective - base_fee) fails the
+        // after-preimage balance check against REVM's full-price credit.
+        let tip_only = build(
+            coinbase_balance_before
+                + U256::from(GAS_USED) * U256::from((GAS_PRICE - BASE_FEE) as u128),
+        );
+        let result = std::panic::catch_unwind(|| executor::execute_and_commit(&tip_only));
+        assert!(
+            result.is_err(),
+            "tip-only (burn-semantics) coinbase credit must fail verification"
+        );
+    }
+
     /// Execute a dumped batch input (a divergence repro bundle or a
     /// `ZISK_DUMP_DIR` capture) through the proven executor.
     /// Invoke with:

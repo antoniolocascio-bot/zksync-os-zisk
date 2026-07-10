@@ -79,6 +79,11 @@ struct DBlock {
 struct DTx {
     signed: String,
     gas_used: u64,
+    /// Native tx_result was Err (tx included in the block but failed
+    /// validation). Mirrors the server input builder, which sets
+    /// force_fail = true and gas_used_override = Some(0) for these.
+    #[serde(default)]
+    failed: bool,
 }
 
 #[derive(serde::Deserialize)]
@@ -273,6 +278,7 @@ fn build_l2_tx_replica(
     signed_bytes: &[u8],
     fallback_chain_id: u64,
     gas_used_override: u64,
+    force_fail: bool,
 ) -> zksync_os_revm::ZKsyncTx<revm::context::TxEnv> {
     use alloy_consensus::transaction::SignerRecoverable;
     use alloy_consensus::Transaction;
@@ -310,7 +316,7 @@ fn build_l2_tx_replica(
         .mint(U256::ZERO)
         .refund_recipient(None)
         .gas_used_override(Some(gas_used_override))
-        .force_fail(false)
+        .force_fail(force_fail)
         .tx_hash(tx_hash)
         .build()
         .expect("build ZKsyncTx")
@@ -352,6 +358,7 @@ fn tracking_run(
             &signed,
             tx_input.chain_id.unwrap_or(chain_id),
             tx_input.gas_used_override.unwrap_or(0),
+            tx_input.force_fail,
         );
         match evm.transact_commit(tx) {
             Ok(_result) => {
@@ -445,7 +452,7 @@ fn build_storage_proofs(
     proofs
 }
 
-fn build_batch_input(d: &DDump) -> BatchInput {
+fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
     assert!(d.block.number >= 1, "block number must be >= 1");
     let spec = zk_spec(d.spec_id);
     if d.da_commitment_scheme == 4 {
@@ -518,15 +525,22 @@ fn build_batch_input(d: &DDump) -> BatchInput {
             .map(|t| TxInput {
                 chain_id: Some(d.chain_id),
                 gas_used_override: Some(t.gas_used),
-                force_fail: false,
+                force_fail: t.failed,
                 auth: TxAuth::L2 { signed_bytes: hbytes(&t.signed) },
             })
             .collect(),
         account_preimages: vec![],
         block_hashes,
         storage_proofs: vec![],
-        // Arm the guest's canonical header-hash assertion with the native value.
-        block_header_hash: hb256(&d.block_header_hash),
+        // Arm the guest's canonical header-hash assertion with the native
+        // value; a zero hash makes the guest skip the check (used while the
+        // native-vs-guest header derivation question is open — defect #21
+        // round 1, so panics reflect mid-execution failures only).
+        block_header_hash: if no_header_check {
+            B256::ZERO
+        } else {
+            hb256(&d.block_header_hash)
+        },
         l2_to_l1_logs: vec![],
         expected_tree_root: B256::ZERO,
     };
@@ -614,18 +628,22 @@ fn build_batch_input(d: &DDump) -> BatchInput {
         operations.push(WriteOp::Update { index: *idx });
         entries.push((*k, *v));
     }
+    // Insert predecessors must reflect the list AT INSERT TIME, not the final
+    // post-state: a later insert can land between a leaf and its predecessor,
+    // so the post-state `next` pointers are not usable. Simulate the evolving
+    // linked list instead (mirrors the server's build_tree_update).
+    let mut list_key_to_index: BTreeMap<B256, u64> =
+        pre_by_index.iter().map(|(idx, k, _, _)| (*k, *idx)).collect();
     for (i, (post_idx, k, v)) in inserts.iter().enumerate() {
         assert_eq!(*post_idx, d.leaf_count_before + i as u64, "inserts not dense");
-        // Predecessor = the post-state leaf whose linked-list next points here.
-        let prev_index = d
-            .post
-            .leaves
-            .iter()
-            .find(|l| l.next == *post_idx)
-            .map(|l| l.index)
-            .unwrap_or_else(|| panic!("no predecessor for insert idx {post_idx}"));
+        let prev_index = *list_key_to_index
+            .range(..*k)
+            .next_back()
+            .unwrap_or_else(|| panic!("no predecessor for insert key {k} (MIN guard missing?)"))
+            .1;
         operations.push(WriteOp::Insert { prev_index });
         entries.push((*k, *v));
+        list_key_to_index.insert(*k, *post_idx);
     }
     println!("tree_update: {} updates, {} inserts", updates.len(), inserts.len());
 
@@ -672,7 +690,13 @@ fn build_batch_input(d: &DDump) -> BatchInput {
         tree_update: Some(tree_update),
         account_preimages_after,
         fri_proof_verification_enabled: d.chain_config_fri,
-        max_tx_gas_limit: d.chain_config_max_tx_gas_limit,
+        // v0.3.0-line bundles carry 0 here (no ChainConfig in that forward
+        // path); 0 would reject every tx, so fall back to the v31 default.
+        max_tx_gas_limit: if d.chain_config_max_tx_gas_limit == 0 {
+            1 << 24
+        } else {
+            d.chain_config_max_tx_gas_limit
+        },
     };
 
     BatchInput {
@@ -729,14 +753,22 @@ fn validate(d: &DDump, bi: &BatchInput) -> bool {
         Ok((_out, pi, sb, sa, bh)) => {
             ok &= check("state_before", &sb, &hb256(&d.native_state_before));
             ok &= check("state_after", &sa, &hb256(&d.native_state_after));
-            ok &= check("batch_output_hash", &bh, &hb256(&d.native_batch_output_hash));
-            let ccfg = zksync_os_zisk_lib::commitment::chain_config_hash(
-                d.chain_id,
-                d.chain_config_fri,
-                d.chain_config_max_tx_gas_limit,
-            );
-            ok &= check("chain_config_hash", &ccfg, &hb256(&d.native_chain_config_hash));
-            ok &= check("batch_public_input", &pi, &hb256(&d.native_batch_public_input));
+            // v0.3.0-line bundles cannot carry these (no native producer in
+            // the forward path); state commitments + header hash + pubdata
+            // remain the native ground truth there.
+            if d.native_batch_output_hash.is_empty() {
+                println!("SKIP batch_output_hash/chain_config_hash/batch_public_input: not in bundle");
+                let _ = (pi, bh);
+            } else {
+                ok &= check("batch_output_hash", &bh, &hb256(&d.native_batch_output_hash));
+                let ccfg = zksync_os_zisk_lib::commitment::chain_config_hash(
+                    d.chain_id,
+                    d.chain_config_fri,
+                    d.chain_config_max_tx_gas_limit,
+                );
+                ok &= check("chain_config_hash", &ccfg, &hb256(&d.native_chain_config_hash));
+                ok &= check("batch_public_input", &pi, &hb256(&d.native_batch_public_input));
+            }
         }
         Err(_) => {
             println!("FAIL executor panicked (see message above)");
@@ -757,10 +789,13 @@ fn frame_for_zisk(bincode_bytes: &[u8]) -> Vec<u8> {
 
 fn main() {
     let mut no_validate = false;
+    let mut no_header_check = false;
     let mut pos: Vec<String> = Vec::new();
     for a in std::env::args().skip(1) {
         if a == "--no-validate" {
             no_validate = true;
+        } else if a == "--no-header-check" {
+            no_header_check = true;
         } else {
             pos.push(a);
         }
@@ -783,7 +818,7 @@ fn main() {
         d.post.leaves.len(),
     );
 
-    let bi = build_batch_input(&d);
+    let bi = build_batch_input(&d, no_header_check);
 
     let out = Path::new(&out_dir);
     std::fs::create_dir_all(out).expect("create out_dir");
@@ -970,7 +1005,7 @@ mod tests {
         );
 
         let d: DDump = serde_json::from_str(&json).expect("parse");
-        let bi = build_batch_input(&d);
+        let bi = build_batch_input(&d, false);
         assert_eq!(bi.version, BATCH_INPUT_VERSION);
         assert!(validate(&d, &bi), "self-consistent bundle must pass all checks");
     }
