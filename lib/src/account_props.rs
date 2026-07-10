@@ -141,6 +141,28 @@ pub fn evm_code_fields(code: &[u8], code_version: u8) -> CodeFields {
     }
 }
 
+/// Whether a no-observable-code account's fields are one of the two
+/// canonical native encodings:
+/// - never-deployed (or delegation-cleared) accounts keep every code field
+///   zero;
+/// - an account DEPLOYED with empty runtime code (native `deploy_code` runs
+///   for every completed deployment regardless of code length) carries
+///   deployed/EVM versioning with the hashes of the empty blob
+///   (`bytecode_hash = blake2s("")`, `observable = keccak256("")`, lens 0).
+///
+/// The deployment status is genuine native state that REVM does not model,
+/// so the guest cannot recompute it for empty-code accounts; it accepts
+/// exactly these two self-consistent encodings, and the tree root (hence
+/// the batch public input) pins which one native actually wrote.
+pub fn no_code_fields_valid(props: &AccountProperties) -> bool {
+    let actual = CodeFields::of(props);
+    if actual == CodeFields::empty() {
+        return true;
+    }
+    let code_version = (props.versioning >> 40) as u8;
+    code_version <= 1 && actual == evm_code_fields(&[], code_version)
+}
+
 /// The full preimage blob stored under `bytecode_hash`:
 /// `code || zero padding to 8 || artifacts`.
 pub fn evm_bytecode_preimage(code: &[u8], code_version: u8) -> Vec<u8> {
@@ -207,5 +229,63 @@ mod tests {
         assert_eq!(fields.artifacts_len, 8);
         assert_eq!(fields.versioning, 0x0101_0100_0000_0000);
         assert_eq!(fields.observable_bytecode_hash, keccak256(code));
+    }
+
+    fn props_from(fields: &CodeFields, nonce: u64) -> AccountProperties {
+        AccountProperties {
+            versioning: fields.versioning,
+            nonce,
+            balance: [0u8; 32],
+            bytecode_hash: fields.bytecode_hash,
+            unpadded_code_len: fields.unpadded_code_len,
+            artifacts_len: fields.artifacts_len,
+            observable_bytecode_hash: fields.observable_bytecode_hash,
+            observable_bytecode_len: fields.observable_bytecode_len,
+        }
+    }
+
+    /// Both canonical no-observable-code encodings must be accepted, and
+    /// nothing else. Pins the exact native deployed-empty materialization
+    /// observed on v0.3.x (`deploy_code` with empty runtime code).
+    #[test]
+    fn no_code_fields_accepts_exactly_the_two_native_encodings() {
+        // Arm 1: never-deployed (or delegation-cleared) — all zero.
+        assert!(no_code_fields_valid(&props_from(&CodeFields::empty(), 7)));
+
+        // Arm 2: deployed with empty runtime code, code version 1.
+        let deployed_empty = evm_code_fields(&[], ARTIFACTS_CACHING_CODE_VERSION);
+        assert_eq!(deployed_empty.versioning, 0x0101_0100_0000_0000);
+        assert_eq!(
+            deployed_empty.bytecode_hash,
+            B256::from_slice(&Blake2s256::digest([])), // blake2s("")
+        );
+        assert_eq!(deployed_empty.observable_bytecode_hash, keccak256([])); // keccak256("")
+        assert_eq!(deployed_empty.unpadded_code_len, 0);
+        assert_eq!(deployed_empty.artifacts_len, 0);
+        assert_eq!(deployed_empty.observable_bytecode_len, 0);
+        assert!(no_code_fields_valid(&props_from(&deployed_empty, 1)));
+        // Code version 0 (pre-artifact-caching) deployed-empty is also valid.
+        assert!(no_code_fields_valid(&props_from(&evm_code_fields(&[], 0), 1)));
+
+        // Mixed encodings are rejected: deployed status with zero hashes...
+        let mut mixed = CodeFields::empty();
+        mixed.versioning = 0x0101_0100_0000_0000;
+        assert!(!no_code_fields_valid(&props_from(&mixed, 1)));
+        // ...zero status with the empty-blob hashes...
+        let mut mixed = deployed_empty.clone();
+        mixed.versioning = 0;
+        assert!(!no_code_fields_valid(&props_from(&mixed, 1)));
+        // ...a wrong bytecode_hash...
+        let mut mixed = deployed_empty.clone();
+        mixed.bytecode_hash = B256::repeat_byte(0x11);
+        assert!(!no_code_fields_valid(&props_from(&mixed, 1)));
+        // ...a nonzero claimed length...
+        let mut mixed = deployed_empty.clone();
+        mixed.unpadded_code_len = 1;
+        assert!(!no_code_fields_valid(&props_from(&mixed, 1)));
+        // ...or an unsupported code version.
+        let mut mixed = deployed_empty;
+        mixed.versioning = 0x0101_0200_0000_0000; // code version 2
+        assert!(!no_code_fields_valid(&props_from(&mixed, 1)));
     }
 }

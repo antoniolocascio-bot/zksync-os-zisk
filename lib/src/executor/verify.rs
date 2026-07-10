@@ -69,8 +69,14 @@ pub(super) fn build_revm_write_map(
         // recompute them from the referenced code so a preimage cannot bind
         // wrong code to the account.
         let observable = props.observable_bytecode_hash;
-        let expected = if observable == KECCAK_EMPTY || observable.is_zero() {
-            account_props::CodeFields::empty()
+        if observable == KECCAK_EMPTY || observable.is_zero() {
+            // No observable code: never-deployed (all-zero fields) or
+            // deployed-with-empty-code (native materializes every completed
+            // deployment, empty code included). See `no_code_fields_valid`.
+            assert!(account_props::no_code_fields_valid(&props),
+                "after-preimage code fields mismatch for {addr}: no observable \
+                 code, but fields are neither all-zero nor deployed-empty: {:?}",
+                account_props::CodeFields::of(&props));
         } else {
             let code = proven_db
                 .code_by_hash_ref(observable)
@@ -85,10 +91,12 @@ pub(super) fn build_revm_write_map(
             assert_eq!(ee_byte, account_props::EVM_EE_BYTE,
                 "non-EVM execution environment {ee_byte} for {addr} is not \
                  supported by the second proof system");
-            account_props::evm_code_fields(&code, code_version)
-        };
-        assert_eq!(account_props::CodeFields::of(&props), expected,
-            "after-preimage code fields mismatch for {addr}");
+            assert_eq!(
+                account_props::CodeFields::of(&props),
+                account_props::evm_code_fields(&code, code_version),
+                "after-preimage code fields mismatch for {addr}"
+            );
+        }
 
         let flat_key = merkle::derive_account_properties_key(&(*addr).into_array());
         writes.insert(flat_key, merkle::AccountProperties::hash(after_preimage));
