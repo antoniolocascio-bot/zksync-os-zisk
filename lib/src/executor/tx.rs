@@ -57,7 +57,11 @@ mod abi_layout {
 ///
 /// Only `gas_used_override` and `force_fail` are taken from TxInput.
 /// `block_gas_limit` caps system transactions, whose own gas limit is zero.
-pub(super) fn build_proven_tx(input: &TxInput, block_gas_limit: u64) -> (ZKsyncTx<TxEnv>, B256, u8) {
+///
+/// Public so host-side witness builders (the dump-to-BatchInput reader) can
+/// run their read-discovery pass through the exact same tx construction the
+/// guest uses, instead of maintaining a drifting replica.
+pub fn build_proven_tx(input: &TxInput, block_gas_limit: u64) -> (ZKsyncTx<TxEnv>, B256, u8) {
     match &input.auth {
         TxAuth::L1 { tx_hash, abi_encoded } | TxAuth::Upgrade { tx_hash, abi_encoded } => {
             build_l1_upgrade_tx(input, tx_hash, abi_encoded)
@@ -163,6 +167,21 @@ fn build_l2_tx(input: &TxInput, signed_bytes: &[u8]) -> (ZKsyncTx<TxEnv>, B256, 
     let gas_priority_fee = envelope.max_priority_fee_per_gas();
     let chain_id = envelope.chain_id().or(input.chain_id);
     let tx_type = envelope.tx_type() as u8;
+    // Envelope-derived typed-tx payloads (all signature-authenticated):
+    // EIP-2930+ access lists change warm/cold gas semantics, the EIP-7702
+    // authorization list is mandatory for type-4 txs, blob fields for
+    // type-3. Mirrors the server's consistency-checker conversion
+    // (zk_tx_into_revm_tx), keeping both REVM consumers identical.
+    let access_list = envelope.access_list().cloned().unwrap_or_default();
+    let authorization_list = envelope
+        .authorization_list()
+        .map(|list| list.to_vec())
+        .unwrap_or_default();
+    let blob_hashes = envelope
+        .blob_versioned_hashes()
+        .map(|hashes| hashes.to_vec())
+        .unwrap_or_default();
+    let max_fee_per_blob_gas = envelope.max_fee_per_blob_gas().unwrap_or_default();
 
     let mut builder = TxEnv::builder()
         .caller(caller)
@@ -172,9 +191,12 @@ fn build_l2_tx(input: &TxInput, signed_bytes: &[u8]) -> (ZKsyncTx<TxEnv>, B256, 
         .value(value)
         .data(data)
         .nonce(nonce)
+        .access_list(access_list)
         .tx_type(Some(tx_type))
         .chain_id(chain_id)
-        .blob_hashes(vec![]);
+        .blob_hashes(blob_hashes)
+        .max_fee_per_blob_gas(max_fee_per_blob_gas)
+        .authorization_list_signed(authorization_list);
 
     if let Some(fee) = gas_priority_fee {
         builder = builder.gas_priority_fee(Some(fee));

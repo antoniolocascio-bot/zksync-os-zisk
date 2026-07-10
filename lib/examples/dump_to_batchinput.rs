@@ -79,9 +79,9 @@ struct DBlock {
 struct DTx {
     signed: String,
     gas_used: u64,
-    /// Native tx_result was Err (tx included in the block but failed
-    /// validation). Mirrors the server input builder, which sets
-    /// force_fail = true and gas_used_override = Some(0) for these.
+    /// Native tx_result was Err: the STF REJECTED the tx at validation and
+    /// rolled back every effect — it is not part of the sealed block (no
+    /// state change, no gas, no transactions-rolling-hash contribution).
     #[serde(default)]
     failed: bool,
 }
@@ -273,56 +273,10 @@ impl revm::DatabaseRef for RecordingDb {
     }
 }
 
-/// Replica of executor::tx::build_l2_tx (module-private upstream).
-fn build_l2_tx_replica(
-    signed_bytes: &[u8],
-    fallback_chain_id: u64,
-    gas_used_override: u64,
-    force_fail: bool,
-) -> zksync_os_revm::ZKsyncTx<revm::context::TxEnv> {
-    use alloy_consensus::transaction::SignerRecoverable;
-    use alloy_consensus::Transaction;
-    use alloy_consensus::TxEnvelope;
-    use alloy_eips::Decodable2718;
-    use revm::context::TxEnv;
-    use revm::primitives::TxKind;
-    use zksync_os_revm::transaction::abstraction::ZKsyncTxBuilder;
-
-    let envelope = TxEnvelope::decode_2718(&mut &signed_bytes[..]).expect("decode 2718");
-    let caller = envelope.recover_signer().expect("recover signer");
-    let tx_hash = keccak256(signed_bytes);
-    let revm_kind = match envelope.to() {
-        Some(addr) => TxKind::Call(addr),
-        None => TxKind::Create,
-    };
-    let gas_priority_fee = envelope.max_priority_fee_per_gas();
-
-    let mut builder = TxEnv::builder()
-        .caller(caller)
-        .gas_limit(envelope.gas_limit())
-        .gas_price(envelope.max_fee_per_gas())
-        .kind(revm_kind)
-        .value(envelope.value())
-        .data(envelope.input().clone())
-        .nonce(envelope.nonce())
-        .tx_type(Some(envelope.tx_type() as u8))
-        .chain_id(envelope.chain_id().or(Some(fallback_chain_id)))
-        .blob_hashes(vec![]);
-    if let Some(fee) = gas_priority_fee {
-        builder = builder.gas_priority_fee(Some(fee));
-    }
-    ZKsyncTxBuilder::new()
-        .base(builder)
-        .mint(U256::ZERO)
-        .refund_recipient(None)
-        .gas_used_override(Some(gas_used_override))
-        .force_fail(force_fail)
-        .tx_hash(tx_hash)
-        .build()
-        .expect("build ZKsyncTx")
-}
-
-/// Replica of executor::evm::run_evm_block for the tracking pass (records reads).
+/// Mirror of executor::evm::run_evm_block for the tracking pass (records
+/// reads). Transactions are built by the guest's own
+/// `executor::tx::build_proven_tx`, so tracking and guest execution can
+/// never diverge on tx construction.
 fn tracking_run(
     chain_id: u64,
     spec_id: ZkSpecId,
@@ -350,16 +304,8 @@ fn tracking_run(
 
     for (tx_idx, tx_input) in block.transactions.iter().enumerate() {
         evm.0.ctx.chain.set_tx_number(tx_idx as u16);
-        let signed = match &tx_input.auth {
-            TxAuth::L2 { signed_bytes } => signed_bytes.clone(),
-            _ => panic!("bundle carries only L2 txs"),
-        };
-        let tx = build_l2_tx_replica(
-            &signed,
-            tx_input.chain_id.unwrap_or(chain_id),
-            tx_input.gas_used_override.unwrap_or(0),
-            tx_input.force_fail,
-        );
+        let (tx, _tx_hash, _tx_type) =
+            executor::tx::build_proven_tx(tx_input, block.gas_limit);
         match evm.transact_commit(tx) {
             Ok(_result) => {
                 let _ = evm.0.ctx.chain.take_logs();
@@ -522,10 +468,18 @@ fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
         transactions: d
             .txs
             .iter()
+            // Natively rejected txs are EXCLUDED from the block by the STF
+            // (zk tx_loop validation-error branch: full rollback; the tx hash
+            // is folded into the rolling hash only for Ok results). Omission
+            // — not force_fail — is the faithful mapping: force_fail keeps
+            // the tx in the block (nonce bump, rolling-hash entry, L2 tx
+            // count) and REVM validation still rejects intrinsic-gas cases
+            // before the force_fail short-circuit.
+            .filter(|t| !t.failed)
             .map(|t| TxInput {
                 chain_id: Some(d.chain_id),
                 gas_used_override: Some(t.gas_used),
-                force_fail: t.failed,
+                force_fail: false,
                 auth: TxAuth::L2 { signed_bytes: hbytes(&t.signed) },
             })
             .collect(),

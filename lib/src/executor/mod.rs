@@ -6,7 +6,7 @@
 
 mod evm;
 mod proven_db;
-mod tx;
+pub mod tx;
 mod verify;
 
 use std::collections::HashMap;
