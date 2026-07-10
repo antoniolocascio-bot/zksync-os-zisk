@@ -1,0 +1,12 @@
+[package]
+name = "zksync-os-zisk-guest-aggregator"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+alloy-primitives = { version = "1", default-features = false, features = ["native-keccak"] }
+ziskos = { git = "https://github.com/0xPolygonHermez/zisk.git", tag = "v0.18.0" }
+
+[profile.release]
+opt-level = 3
