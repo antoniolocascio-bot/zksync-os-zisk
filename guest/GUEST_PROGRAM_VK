@@ -1,5 +1,5 @@
 # PENDING: derive and record the programVK for the reproducible guest ELF
-# with sha256 2e1dc222e40a2ec4f243ff172f0e70f29ada955602b501cf0a4e889ff61c9f16
+# with sha256 7cb3289fbd5f99f083d9edcc702b61bcd85b6bc445a155425d3954acfc4d7ec1
 # (see GUEST_ELF_SHA256) on a ZiSK prover box with the v0.18.0 proving key:
 #
 #   cargo-zisk program-setup -e out/zksync-os-zisk-guest \

@@ -155,7 +155,28 @@ pub fn modexp(base: &[u8], exp: &[u8], modulus: &[u8], out: &mut [u8]) -> usize 
 /// (r, s ∈ [1, n-1]; pk canonical, non-identity, on curve; high-s accepted;
 /// the message scalar acts mod n) on top of the `secp256r1_add`/`dbl`
 /// syscalls and the ecdsa-verify fcall hint.
+///
+/// EXCEPTION — public keys with x = 0, i.e. the two curve points (0, ±√b)
+/// (crafted-key territory; a random key hits them with probability ~2⁻²⁵⁵):
+/// the fcall hint implementation behind zisklib (`fcalls_impl`, shared
+/// verbatim by native runs, ziskemu, and the prover through the fcall-ID
+/// proxy) encodes the point at infinity as (0, 0) and tests x-equality
+/// BEFORE its identity checks, so its first accumulator step 𝒪 + PK takes
+/// the "equal x, different y ⇒ inverse points ⇒ 𝒪" branch and drops PK's
+/// top-bit contribution from the hinted R. zisklib's in-circuit equation
+/// check [z]G + [r]PK − [s]R = 𝒪 is sound — a corrupted hint can only
+/// reject valid signatures, never accept invalid ones — so exactly this pk
+/// class mis-verdicts (found by the 2026-07-11 corpus round 2: 4
+/// osaka_eip7951 cases). Route it to REVM's software reference
+/// (`DefaultCrypto` → the p256 crate), bit-identical to the native side of
+/// the equivalence check by construction; it is already compiled into the
+/// guest, and the cost is irrelevant at ~never-hit frequency. Drop this
+/// branch when upstream fixes the hint (see the tripwire test below).
 pub fn secp256r1_verify(msg: &[u8; 32], sig: &[u8; 64], pk: &[u8; 64]) -> bool {
+    if pk[..32].iter().all(|&b| b == 0) {
+        use revm::precompile::{Crypto, DefaultCrypto};
+        return DefaultCrypto.secp256r1_verify_signature(msg, sig, pk);
+    }
     let z = be_bytes_to_u64_le_4(msg[..32].try_into().unwrap());
     let r = be_bytes_to_u64_le_4(sig[..32].try_into().unwrap());
     let s = be_bytes_to_u64_le_4(sig[32..].try_into().unwrap());
@@ -786,6 +807,84 @@ mod tests {
         }
         assert_eq!(borrow, 0);
         assert!(check_p256(&msg, &mirrored, &pk));
+    }
+
+    /// The two corpus round-2 divergence vectors (osaka_eip7951 dumps
+    /// 000019/000259 and 000241/000426, two batch cases each): valid
+    /// signatures under public keys with x = 0 — the points (0, ±√b),
+    /// reachable only by crafted keys. zisklib's fcall hint implementation
+    /// corrupts the hinted R for such keys (its (0,0) infinity sentinel
+    /// collides with legitimate x = 0 points in its curve-add), so the hook
+    /// routes them to the software reference path; these pins fail with the
+    /// pure zisklib path.
+    fn p256_zero_x_vectors() -> [([u8; 32], [u8; 64], [u8; 64]); 2] {
+        [
+            (
+                hex!("f98a88895cb0866c5bad58cf03000ddf9d21cb9407892ff54d637e6a046afbb3"),
+                hex!(
+                    "81dc074973d3222f3930981ad98d022517c91063ffb83cfd620e29b86dc30a8f"
+                    "365e4cd085617a265765062a2d9954ed86309dfa33cf5ae1464fe119419fc34a"
+                ),
+                hex!(
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                    "99b7a386f1d07c29dbcc42a27b5f9449abe3d50de25178e8d7407a95e8b06c0b"
+                ),
+            ),
+            (
+                hex!("c3d3be9eb3577f217ae0ab360529a30b18adc751aec886328593d7d6fe042809"),
+                hex!(
+                    "3a4e97b44cbf88b90e6205a45ba957e520f63f3c6072b53c244653278a1819d8"
+                    "6a184aa037688a5ebd25081fd2c0b10bb64fa558b671bd81955ca86e09d9d722"
+                ),
+                hex!(
+                    "0000000000000000000000000000000000000000000000000000000000000000"
+                    "66485c780e2f83d72433bd5d84a06bb6541c2af31dae871728bf856a174f93f4"
+                ),
+            ),
+        ]
+    }
+
+    #[test]
+    fn p256_zero_x_pubkey_vectors_match_reference() {
+        let [(msg_a, sig_a, pk_a), (msg_b, sig_b, pk_b)] = p256_zero_x_vectors();
+
+        // Both corpus vectors are VALID signatures.
+        assert!(check_p256(&msg_a, &sig_a, &pk_a));
+        assert!(check_p256(&msg_b, &sig_b, &pk_b));
+
+        // Tampering must still reject through the same (software) path.
+        let mut bad_sig = sig_a;
+        bad_sig[63] ^= 1;
+        assert!(!check_p256(&msg_a, &bad_sig, &pk_a));
+        let mut bad_msg = msg_b;
+        bad_msg[0] ^= 1;
+        assert!(!check_p256(&bad_msg, &sig_b, &pk_b));
+
+        // Cross-key: a's signature is invalid under b's key.
+        assert!(!check_p256(&msg_a, &sig_a, &pk_b));
+    }
+
+    /// Tripwire pinning the UPSTREAM defect that motivates the x = 0
+    /// software route in `secp256r1_verify`: zisklib's fcall hint (shared
+    /// verbatim by native runs, ziskemu, and the prover via the fcall
+    /// proxy) mis-computes R for x = 0 public keys, and the sound equation
+    /// check then rejects the valid signature. If a ziskos bump makes this
+    /// test FAIL, the upstream bug is fixed and the workaround branch (and
+    /// this tripwire) can be dropped.
+    #[test]
+    fn p256_zero_x_pubkey_zisklib_hint_defect_tripwire() {
+        let [(msg, sig, pk), _] = p256_zero_x_vectors();
+        let z = be_bytes_to_u64_le_4(&msg);
+        let r = be_bytes_to_u64_le_4(sig[..32].try_into().unwrap());
+        let s = be_bytes_to_u64_le_4(sig[32..].try_into().unwrap());
+        let x = be_bytes_to_u64_le_4(pk[..32].try_into().unwrap());
+        let y = be_bytes_to_u64_le_4(pk[32..].try_into().unwrap());
+        let pk_limbs = [x[0], x[1], x[2], x[3], y[0], y[1], y[2], y[3]];
+        assert!(
+            !zisklib::ecdsa_verify_secp256r1(&pk_limbs, &z, &r, &s),
+            "zisklib now verifies x = 0 public keys correctly — drop the \
+             software route in secp256r1_verify and this tripwire"
+        );
     }
 
     #[test]
