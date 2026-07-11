@@ -52,6 +52,7 @@ RUN cd /build/guest \
     && cargo-zisk build --release \
     && ELF="$(find target -type f -name zksync-os-zisk-guest -path '*/release/*' | head -1)" \
     && test -n "$ELF" \
+    && nm -C "$ELF" | grep -q 'ziskos::alloc::embedded_dlmalloc::DLMALLOC' \
     && cp "$ELF" /build/zksync-os-zisk-guest \
     && sha256sum /build/zksync-os-zisk-guest
 
