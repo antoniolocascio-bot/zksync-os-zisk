@@ -20,3 +20,11 @@ bincode = { version = "2", features = ["serde"] }
 url = "2"
 vise = "0.2"
 vise-exporter = "0.3"
+# Shared aggregator-guest parsing/constants: the input assembler validates
+# streams with the guest's own parser (host build pulls only tiny-keccak).
+zksync-os-zisk-guest-aggregator = { path = "../guest-aggregator" }
+
+[dev-dependencies]
+# Pin cross-check only: asserts VADCOP_FINAL_BODY_WORDS against the real
+# pil2-proofman verifier at the pinned tag (see prover.rs tests).
+proofman-verifier = { git = "https://github.com/0xPolygonHermez/pil2-proofman.git", tag = "v0.18.0", default-features = false, features = ["verify"] }

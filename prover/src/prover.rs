@@ -341,6 +341,85 @@ pub fn parse_proof_file(path: &Path) -> anyhow::Result<ZiskSnarkOutput> {
     Ok(ZiskSnarkOutput { proof: proof_bytes, public_values })
 }
 
+/// Extract the serialized `vadcop_final` proof stream — the exact byte
+/// layout of `zisk_common::Proof::get_proof_bytes()`, which is what the
+/// aggregator guest verifies in-zkVM — from a `cargo-zisk prove` output
+/// file with a **Vadcop** body (a run WITHOUT `--plonk`; with `--plonk`
+/// the file holds only the BN254 wrap and the vadcop_final proof is gone).
+///
+/// Stream layout (u64 LE words):
+/// `[minimal=0][n_publics=68][program_vk(4)][publics(64)][body][vadcop_vk(4)]`.
+pub fn vadcop_stream_from_proof_file(path: &Path) -> anyhow::Result<Vec<u8>> {
+    use zksync_os_zisk_guest_aggregator as agg;
+
+    let data = std::fs::read(path)?;
+    let (proof_file, consumed): (ZiskProofFile, usize) =
+        bincode::serde::decode_from_slice(&data, bincode::config::standard())
+            .map_err(|e| anyhow::anyhow!("failed to decode proof file: {e}"))?;
+    anyhow::ensure!(
+        consumed == data.len(),
+        "trailing bytes in proof file: decoded {consumed} of {}",
+        data.len()
+    );
+
+    let ZiskProofBody::Vadcop { proof, zisk_vk, minimal } = proof_file.body else {
+        anyhow::bail!(
+            "proof file contains a Plonk proof, expected a vadcop_final body \
+             (run cargo-zisk prove WITHOUT --plonk to keep the vadcop_final proof)"
+        );
+    };
+    anyhow::ensure!(
+        !minimal,
+        "proof file contains a minimal vadcop_final proof; the aggregator \
+         accepts only non-minimal proofs (Poseidon2-16 precompile path)"
+    );
+    anyhow::ensure!(
+        proof.len() == agg::VADCOP_FINAL_BODY_WORDS,
+        "vadcop_final body has {} words, expected {} — pil2-proofman pin mismatch?",
+        proof.len(),
+        agg::VADCOP_FINAL_BODY_WORDS
+    );
+    anyhow::ensure!(
+        proof_file.program_vk.vk.len() == PROGRAM_VK_LEN,
+        "program VK has {} words, expected {PROGRAM_VK_LEN}",
+        proof_file.program_vk.vk.len()
+    );
+    anyhow::ensure!(
+        zisk_vk.len() == PROGRAM_VK_LEN,
+        "vadcop VK has {} words, expected {PROGRAM_VK_LEN}",
+        zisk_vk.len()
+    );
+    anyhow::ensure!(
+        proof_file.publics.data.len() == agg::PUBLICS_WORDS * 4,
+        "publics region has {} bytes, expected {}",
+        proof_file.publics.data.len(),
+        agg::PUBLICS_WORDS * 4
+    );
+
+    let mut words: Vec<u64> = Vec::with_capacity(agg::PROOF_STREAM_WORDS);
+    words.push(0); // non-minimal
+    words.push((PROGRAM_VK_LEN + agg::PUBLICS_WORDS) as u64); // n_publics = 68
+    words.extend_from_slice(&proof_file.program_vk.vk);
+    // Each public is a u32 stored LE in `data`, widened to a u64 word
+    // (mirrors zisk-common's `PublicValues::public_u64`).
+    words.extend(
+        proof_file
+            .publics
+            .data
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes(c.try_into().unwrap()) as u64),
+    );
+    words.extend_from_slice(&proof);
+    words.extend_from_slice(&zisk_vk);
+    debug_assert_eq!(words.len(), agg::PROOF_STREAM_WORDS);
+
+    let mut bytes = Vec::with_capacity(words.len() * 8);
+    for w in &words {
+        bytes.extend_from_slice(&w.to_le_bytes());
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +481,110 @@ mod tests {
         assert_eq!(&out.public_values[..8], 0x1111_2222_3333_4444u64.to_be_bytes().as_slice());
         assert_eq!(out.public_values[32..288], publics_data[..]);
         assert_eq!(&out.public_values[288..296], 0xaaaa_bbbb_cccc_ddddu64.to_be_bytes().as_slice());
+    }
+
+    #[test]
+    fn vadcop_stream_extraction_roundtrip() {
+        use zksync_os_zisk_guest_aggregator as agg;
+
+        let program_vk = vec![1u64, 2, 3, 4];
+        let zisk_vk = vec![5u64, 6, 7, 8];
+        let body = vec![7u64; agg::VADCOP_FINAL_BODY_WORDS];
+        // 64 u32 publics, LE-packed: first 8 words carry 0x11111111.
+        let mut publics_data = vec![0u8; agg::PUBLICS_WORDS * 4];
+        publics_data[..32].copy_from_slice(&[0x11u8; 32]);
+
+        let proof = ZiskProofFile {
+            body: ZiskProofBody::Vadcop {
+                proof: body.clone(),
+                zisk_vk: zisk_vk.clone(),
+                minimal: false,
+            },
+            publics: ZiskPublicValues { data: publics_data },
+            program_vk: ZiskProgramVk { vk: program_vk.clone() },
+        };
+        let bytes = bincode::serde::encode_to_vec(&proof, bincode::config::standard()).unwrap();
+        let dir = std::env::temp_dir().join(format!("zisk_agg_stream_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("vadcop_final_proof.bin");
+        std::fs::write(&path, &bytes).unwrap();
+
+        let stream = vadcop_stream_from_proof_file(&path).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(stream.len(), agg::PROOF_STREAM_BYTES);
+        // Validate with the guest's own parser: the two implementations
+        // must agree on the layout by construction.
+        let words = agg::words_from_bytes(&stream).unwrap();
+        let frame = agg::ProofFrame::parse(words).unwrap();
+        assert_eq!(frame.program_vk(), program_vk.as_slice());
+        assert_eq!(frame.vadcop_vk(), zisk_vk.as_slice());
+        assert_eq!(frame.commitment(), [0x11u8; 32]);
+        let body_start = agg::HEADER_WORDS + agg::PROGRAM_VK_WORDS + agg::PUBLICS_WORDS;
+        assert_eq!(
+            &words[body_start..body_start + agg::VADCOP_FINAL_BODY_WORDS],
+            body.as_slice()
+        );
+    }
+
+    #[test]
+    fn vadcop_stream_rejects_plonk_and_minimal() {
+        use zksync_os_zisk_guest_aggregator as agg;
+
+        let dir = std::env::temp_dir().join(format!("zisk_agg_reject_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Plonk body — the file the daemon submits to the server.
+        let plonk = ZiskProofFile {
+            body: ZiskProofBody::Plonk {
+                proof_bytes: vec![7u8; ZISK_SNARK_PROOF_BYTES],
+                plonk_vk: Box::new(ZiskPlonkVkBlob {
+                    vadcop_vk: vec![0; 4],
+                    plonk_vkey: sample_vkey(),
+                }),
+            },
+            publics: ZiskPublicValues { data: vec![0; 256] },
+            program_vk: ZiskProgramVk { vk: vec![0; 4] },
+        };
+        let path = dir.join("plonk.bin");
+        std::fs::write(
+            &path,
+            bincode::serde::encode_to_vec(&plonk, bincode::config::standard()).unwrap(),
+        )
+        .unwrap();
+        let err = vadcop_stream_from_proof_file(&path).unwrap_err().to_string();
+        assert!(err.contains("Plonk"), "unexpected error: {err}");
+
+        // Minimal vadcop body — Poseidon2-8, no precompile: refused.
+        let minimal = ZiskProofFile {
+            body: ZiskProofBody::Vadcop {
+                proof: vec![7u64; agg::VADCOP_FINAL_BODY_WORDS],
+                zisk_vk: vec![0; 4],
+                minimal: true,
+            },
+            publics: ZiskPublicValues { data: vec![0; 256] },
+            program_vk: ZiskProgramVk { vk: vec![0; 4] },
+        };
+        let path = dir.join("minimal.bin");
+        std::fs::write(
+            &path,
+            bincode::serde::encode_to_vec(&minimal, bincode::config::standard()).unwrap(),
+        )
+        .unwrap();
+        let err = vadcop_stream_from_proof_file(&path).unwrap_err().to_string();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(err.contains("minimal"), "unexpected error: {err}");
+    }
+
+    /// The guest-side body-size constant must match the pinned
+    /// pil2-proofman verifier exactly — this is the only place the pin is
+    /// checked mechanically (see `VADCOP_FINAL_BODY_WORDS` docs).
+    #[test]
+    fn vadcop_body_words_matches_pinned_verifier() {
+        assert_eq!(
+            zksync_os_zisk_guest_aggregator::VADCOP_FINAL_BODY_WORDS * 8,
+            proofman_verifier::expected_vadcop_final_proof_bytes(),
+        );
     }
 
     #[test]

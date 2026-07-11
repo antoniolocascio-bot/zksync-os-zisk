@@ -4493,6 +4493,7 @@ name = "zksync-os-zisk-guest-aggregator"
 version = "0.1.0"
 dependencies = [
  "alloy-primitives",
+ "tiny-keccak",
  "ziskos",
 ]
 
