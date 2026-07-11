@@ -1,11 +1,12 @@
 # PENDING: derive and record the programVK for the reproducible guest ELF
-# with sha256 c297b14b5c195b34cf700fcf33f0450cd137cad10b0acd0655909157e38f90df
+# with sha256 2e1dc222e40a2ec4f243ff172f0e70f29ada955602b501cf0a4e889ff61c9f16
 # (see GUEST_ELF_SHA256) on a ZiSK prover box with the v0.18.0 proving key:
 #
 #   cargo-zisk program-setup -e out/zksync-os-zisk-guest \
 #       -k ~/.zisk/provingKey
 #
-# The previous value belonged to the bump-allocator ELF and must not be used
-# with this build. Serialization is the four ROM root-hash u64 limbs,
-# big-endian, in order — identical to the prover daemon's public-values
-# prefix and the server's `prover_api.zisk_program_vk` expectation.
+# The previous value belonged to the bump-allocator ELF (before the wired
+# crypto hooks of plan 6.9) and must not be used with this build.
+# Serialization is the four ROM root-hash u64 limbs, big-endian, in order —
+# identical to the prover daemon's public-values prefix and the server's
+# `prover_api.zisk_program_vk` expectation.

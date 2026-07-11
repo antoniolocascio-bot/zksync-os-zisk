@@ -4,13 +4,20 @@
 //! The committed output is the BatchPublicInput hash matching the L1 format.
 //! There is no unverified path — the guest always runs proven execution.
 
-#![no_main]
+// Under `cargo test` the harness supplies the binary entrypoint; the ziskos
+// entrypoint below is compiled out so the hook logic in `hooks` can be
+// unit-tested on the host.
+#![cfg_attr(not(test), no_main)]
 
-use zksync_os_zisk_lib::{crypto::CustomEvmCrypto, executor, types::BatchInput};
+mod hooks;
 
+#[cfg(not(test))]
 ziskos::entrypoint!(main);
 
+#[cfg(not(test))]
 fn main() {
+    use zksync_os_zisk_lib::{crypto::CustomEvmCrypto, executor, types::BatchInput};
+
     // Install ZiSK-native crypto (keccak, secp256k1, bn254, etc.)
     // before any REVM execution. On the ZiSK target this uses hardware-
     // accelerated circuits; on native it falls back to software.
@@ -40,10 +47,13 @@ fn main() {
 }
 
 // `zksync-os-zisk-lib::crypto::CustomEvmCrypto` calls these C-ABI symbols on
-// the ZiSK target; they must exist for the ELF to link. Precompiles that no
-// proven batch has exercised yet are self-identifying panic-stubs: a batch
-// that hits one fails loudly under `ziskemu`, at which point the stub gets a
-// real implementation backed by `ziskos::zisklib` (as ecrecover below did).
+// the ZiSK target; they must exist for the ELF to link. Every hook the v31
+// EVM corpus exercises is wired to a real `ziskos::zisklib` backend below;
+// the target-independent bodies live in `hooks`, where host-side unit tests
+// compare them bit-for-bit against REVM's `DefaultCrypto` reference.
+// Precompiles no v31 batch can invoke remain self-identifying panic-stubs:
+// a batch that hits one fails loudly under `ziskemu`, at which point the
+// stub gets a real implementation (as ecrecover and the hooks below did).
 // keccak256 is not stubbed — it routes through the tiny-keccak patch to the
 // native-keccak syscall.
 macro_rules! precompile_stub {
@@ -60,15 +70,13 @@ macro_rules! precompile_stub {
     };
 }
 
-precompile_stub!(sha256_c(input: *const u8, input_len: usize, output: *mut u8));
-precompile_stub!(bn254_g1_add_c(p1: *const u8, p2: *const u8, ret: *mut u8) -> u8);
-precompile_stub!(bn254_g1_mul_c(point: *const u8, scalar: *const u8, ret: *mut u8) -> u8);
-precompile_stub!(bn254_pairing_check_c(pairs: *const u8, num_pairs: usize) -> u8);
 precompile_stub!(secp256k1_ecdsa_verify_and_address_recover_c(sig: *const u8, msg: *const u8, pk: *const u8, output: *mut u8) -> u8);
-precompile_stub!(modexp_bytes_c(base_ptr: *const u8, base_len: usize, exp_ptr: *const u8, exp_len: usize, modulus_ptr: *const u8, modulus_len: usize, ret_ptr: *mut u8) -> usize);
+// blake2b: unreachable at v31 per the 2026-07-10 EVM corpus run (ZKsync OS
+// does not enable the EIP-152 precompile).
 precompile_stub!(blake2b_compress_c(rounds: u32, h: *mut u64, m: *const u64, t: *const u64, f: u8));
-precompile_stub!(secp256r1_ecdsa_verify_c(msg: *const u8, sig: *const u8, pk: *const u8) -> bool);
+// KZG point evaluation: unreachable at v31 per the 2026-07-10 EVM corpus run.
 precompile_stub!(verify_kzg_proof_c(z: *const u8, y: *const u8, commitment: *const u8, proof: *const u8) -> bool);
+// bls12-381 (EIP-2537): unreachable at v31 per the 2026-07-10 EVM corpus run.
 precompile_stub!(bls12_381_g1_add_c(ret: *mut u8, a: *const u8, b: *const u8) -> u8);
 precompile_stub!(bls12_381_g1_msm_c(ret: *mut u8, pairs: *const u8, num_pairs: usize) -> u8);
 precompile_stub!(bls12_381_g2_add_c(ret: *mut u8, a: *const u8, b: *const u8) -> u8);
@@ -76,6 +84,114 @@ precompile_stub!(bls12_381_g2_msm_c(ret: *mut u8, pairs: *const u8, num_pairs: u
 precompile_stub!(bls12_381_pairing_check_c(pairs: *const u8, num_pairs: usize) -> u8);
 precompile_stub!(bls12_381_fp_to_g1_c(ret: *mut u8, fp: *const u8) -> u8);
 precompile_stub!(bls12_381_fp2_to_g2_c(ret: *mut u8, fp2: *const u8) -> u8);
+
+// ==================== wired crypto hooks (plan 6.9) ====================
+//
+// Thin unsafe pointer shims over the safe bodies in `hooks`. Pointer widths
+// are fixed by the callers in `lib/src/crypto/impls.rs`, which always pass
+// buffers of exactly the sizes assumed here (REVM right-pads precompile
+// inputs before dispatching).
+
+/// SHA-256 digest for the `sha256` EVM precompile (0x02).
+///
+/// `input` points to `input_len` bytes; `output` receives the 32-byte
+/// FIPS 180-4 digest. Backed by the ZiSK `sha256f` compression circuit via
+/// `zisklib::sha256`.
+#[no_mangle]
+pub extern "C" fn sha256_c(input: *const u8, input_len: usize, output: *mut u8) {
+    let input = unsafe { core::slice::from_raw_parts(input, input_len) };
+    let digest = hooks::sha256(input);
+    let out = unsafe { core::slice::from_raw_parts_mut(output, 32) };
+    out.copy_from_slice(&digest);
+}
+
+/// BN254 G1 addition for the `ecAdd` EVM precompile (0x06, EIP-196).
+///
+/// `p1`/`p2` point to 64-byte big-endian affine points (x ‖ y, all zeros =
+/// infinity); on success `ret` receives the 64-byte sum. Returns 0 = success,
+/// 1 = success with infinity result (`ret` zeroed), 2 = coordinate not in
+/// field, 3 = point not on curve — the codes `impls.rs` maps to
+/// `PrecompileHalt`. Backed by the `bn254_curve_add`/`dbl` syscalls via
+/// `zisklib::add_complete_bn254`.
+#[no_mangle]
+pub extern "C" fn bn254_g1_add_c(p1: *const u8, p2: *const u8, ret: *mut u8) -> u8 {
+    let p1 = unsafe { &*(p1 as *const [u8; 64]) };
+    let p2 = unsafe { &*(p2 as *const [u8; 64]) };
+    let out = unsafe { &mut *(ret as *mut [u8; 64]) };
+    hooks::bn254_g1_add(p1, p2, out)
+}
+
+/// BN254 G1 scalar multiplication for the `ecMul` EVM precompile (0x07,
+/// EIP-196).
+///
+/// `point` is a 64-byte big-endian affine point, `scalar` a 32-byte
+/// big-endian integer (arbitrary, reduced mod the group order inside).
+/// Output format and return codes are identical to `bn254_g1_add_c`.
+/// Backed by the accelerated double-and-add in `zisklib::mul_complete_bn254`.
+#[no_mangle]
+pub extern "C" fn bn254_g1_mul_c(point: *const u8, scalar: *const u8, ret: *mut u8) -> u8 {
+    let point = unsafe { &*(point as *const [u8; 64]) };
+    let scalar = unsafe { &*(scalar as *const [u8; 32]) };
+    let out = unsafe { &mut *(ret as *mut [u8; 64]) };
+    hooks::bn254_g1_mul(point, scalar, out)
+}
+
+/// BN254 pairing check for the `ecPairing` EVM precompile (0x08, EIP-197).
+///
+/// `pairs` points to `num_pairs` × 192-byte elements (G1 ‖ G2 in EVM byte
+/// order: G2 = x_im ‖ x_re ‖ y_im ‖ y_re). Returns 0 = product of pairings
+/// is one, 1 = it is not, 2..=6 = validation error (see `impls.rs`).
+/// Backed by the bn254 Miller-loop/final-exponentiation circuits via
+/// `zisklib::pairing_check_bn254`, plus an upfront coordinate-canonicality
+/// check in `hooks` that zisklib skips for infinity-paired points.
+#[no_mangle]
+pub extern "C" fn bn254_pairing_check_c(pairs: *const u8, num_pairs: usize) -> u8 {
+    let pairs = unsafe { core::slice::from_raw_parts(pairs, num_pairs * 192) };
+    hooks::bn254_pairing_check(pairs)
+}
+
+/// EIP-198 modular exponentiation for the `modExp` EVM precompile (0x05).
+///
+/// Operands are arbitrary-length big-endian byte strings (zero-length
+/// allowed). Writes `base^exp mod modulus`, big-endian and left-zero-padded
+/// to `modulus_len`, into `ret_ptr` (which the caller sizes to
+/// `modulus_len`) and returns the written length (always `modulus_len`).
+/// Backed by the `arith256` syscalls + `bin_decomp` fcall via
+/// `zisklib::modexp`, which handles arbitrary-size operands (multi-limb
+/// long-division path for moduli beyond 256 bits).
+#[no_mangle]
+pub extern "C" fn modexp_bytes_c(
+    base_ptr: *const u8,
+    base_len: usize,
+    exp_ptr: *const u8,
+    exp_len: usize,
+    modulus_ptr: *const u8,
+    modulus_len: usize,
+    ret_ptr: *mut u8,
+) -> usize {
+    let base = unsafe { core::slice::from_raw_parts(base_ptr, base_len) };
+    let exp = unsafe { core::slice::from_raw_parts(exp_ptr, exp_len) };
+    let modulus = unsafe { core::slice::from_raw_parts(modulus_ptr, modulus_len) };
+    let out = unsafe { core::slice::from_raw_parts_mut(ret_ptr, modulus_len) };
+    hooks::modexp(base, exp, modulus, out)
+}
+
+/// secp256r1 (P-256) ECDSA verification for the `P256VERIFY` precompile
+/// (RIP-7212 / EIP-7951).
+///
+/// `msg` points to the 32-byte message hash, `sig` to r ‖ s (64 bytes,
+/// big-endian), `pk` to the uncompressed public key x ‖ y (64 bytes,
+/// big-endian). Returns the exact RIP-7212 predicate: r, s ∈ [1, n-1], pk a
+/// canonical non-identity curve point, high-s accepted. Backed by the
+/// `secp256r1_add`/`dbl` syscalls + ecdsa-verify fcall hint via
+/// `zisklib::ecdsa_verify_secp256r1`.
+#[no_mangle]
+pub extern "C" fn secp256r1_ecdsa_verify_c(msg: *const u8, sig: *const u8, pk: *const u8) -> bool {
+    let msg = unsafe { &*(msg as *const [u8; 32]) };
+    let sig = unsafe { &*(sig as *const [u8; 64]) };
+    let pk = unsafe { &*(pk as *const [u8; 64]) };
+    hooks::secp256r1_verify(msg, sig, pk)
+}
 
 /// Recover the signer's Ethereum-address hash from an ECDSA signature.
 ///
