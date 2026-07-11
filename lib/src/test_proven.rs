@@ -655,6 +655,356 @@ mod tests {
         );
     }
 
+    /// Full 124-byte props blob for an account WITH code (code version 1).
+    fn encode_account_props_code(nonce: u64, balance: U256, code: &[u8]) -> Vec<u8> {
+        let mut data = encode_account_props(nonce, balance);
+        if !code.is_empty() {
+            let f = crate::account_props::evm_code_fields(code, 1);
+            data[0..8].copy_from_slice(&f.versioning.to_be_bytes());
+            data[48..80].copy_from_slice(f.bytecode_hash.as_slice());
+            data[80..84].copy_from_slice(&f.unpadded_code_len.to_be_bytes());
+            data[84..88].copy_from_slice(&f.artifacts_len.to_be_bytes());
+            data[88..120].copy_from_slice(f.observable_bytecode_hash.as_slice());
+            data[120..124].copy_from_slice(&f.observable_bytecode_len.to_be_bytes());
+        }
+        data
+    }
+
+    /// Non-existence proof for `fk` from a `build_dense_tree` result.
+    fn non_existence_proof(
+        leaves: &[(u64, TreeLeaf)],
+        siblings: &[Vec<B256>],
+        fk: &B256,
+    ) -> StorageProof {
+        let (li, lleaf) = leaves
+            .iter()
+            .filter(|(_, l)| l.key < *fk)
+            .max_by_key(|(_, l)| l.key)
+            .expect("MIN guard");
+        let (ri, rleaf) = leaves.iter().find(|(i, _)| *i == lleaf.next_index).unwrap();
+        let entry = |i: u64, l: &TreeLeaf| SlotProofEntry {
+            index: i,
+            value: l.value,
+            next_index: l.next_index,
+            siblings: siblings[i as usize].clone(),
+        };
+        StorageProof::NonExisting {
+            left_neighbor: NeighborProofEntry { entry: entry(*li, lleaf), leaf_key: lleaf.key },
+            right_neighbor: NeighborProofEntry { entry: entry(*ri, rleaf), leaf_key: rleaf.key },
+        }
+    }
+
+    /// Sign a legacy tx (chain 1, gas_price 10) with a deterministic key.
+    fn sign_legacy(
+        sk_bytes: [u8; 32],
+        nonce: u64,
+        to: Address,
+        data: Vec<u8>,
+        gas_limit: u64,
+    ) -> (Address, Vec<u8>) {
+        use alloy_consensus::{SignableTransaction, TxEnvelope, TxLegacy};
+        use alloy_eips::eip2718::Encodable2718;
+        use k256::ecdsa::SigningKey;
+        let sk = SigningKey::from_bytes((&sk_bytes).into()).unwrap();
+        let pubkey = sk.verifying_key().to_encoded_point(false);
+        let sender =
+            Address::from_slice(&alloy_primitives::keccak256(&pubkey.as_bytes()[1..])[12..]);
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce,
+            gas_price: 10,
+            gas_limit,
+            to: alloy_primitives::TxKind::Call(to),
+            value: U256::ZERO,
+            input: data.into(),
+        };
+        let sighash = tx.signature_hash();
+        let (sig, recid) = sk.sign_prehash_recoverable(sighash.as_slice()).unwrap();
+        let sig_bytes = sig.to_bytes();
+        let signature = alloy_primitives::Signature::new(
+            U256::from_be_slice(&sig_bytes[..32]),
+            U256::from_be_slice(&sig_bytes[32..]),
+            recid.is_y_odd(),
+        );
+        let envelope = TxEnvelope::Legacy(tx.into_signed(signature));
+        let mut signed = Vec::new();
+        envelope.encode_2718(&mut signed);
+        (sender, signed)
+    }
+
+    /// `keccak256(rlp([deployer, nonce]))[12..]` for a single-byte nonce.
+    fn create_address(deployer: Address, nonce: u8) -> Address {
+        assert!(nonce > 0 && nonce < 0x80);
+        let mut rlp = vec![0xd6, 0x94];
+        rlp.extend_from_slice(deployer.as_slice());
+        rlp.push(nonce);
+        Address::from_slice(&alloy_primitives::keccak256(&rlp)[12..])
+    }
+
+    /// Assemble a single-block batch around the variable witness parts.
+    fn selfdestruct_test_batch(
+        root: B256,
+        sorted_leaves: Vec<(u64, TreeLeaf)>,
+        operations: Vec<WriteOp>,
+        entries: Vec<(B256, B256)>,
+        account_preimages_after: Vec<(Address, Vec<u8>)>,
+        block: BlockInput,
+        bytecodes: Vec<(B256, Vec<u8>)>,
+    ) -> BatchInput {
+        let leaf_count = sorted_leaves.len() as u64;
+        BatchInput {
+            version: crate::types::BATCH_INPUT_VERSION,
+            chain_id: 1,
+            spec_id: 2, // AtlasV3
+            protocol_version_minor: 31,
+            batch_meta: BatchMeta {
+                tree_root_before: root,
+                leaf_count_before: leaf_count,
+                block_number_before: 0,
+                last_block_timestamp_before: 0,
+                block_hashes_blake_before: B256::ZERO,
+                previous_block_hashes: vec![],
+                upgrade_tx_hash: B256::ZERO,
+                da_commitment_scheme: 2,
+                pubdata: vec![],
+                multichain_root: B256::ZERO,
+                sl_chain_id: 1,
+                blob_versioned_hashes: vec![],
+                tree_update: Some(BatchTreeUpdate {
+                    operations,
+                    entries,
+                    sorted_leaves,
+                    intermediate_hashes: vec![],
+                    leaf_count_before: leaf_count,
+                }),
+                account_preimages_after,
+                fri_proof_verification_enabled: false,
+                max_tx_gas_limit: 1 << 24,
+            },
+            blocks: vec![block],
+            bytecodes,
+        }
+    }
+
+    /// Runtime payload: `SSTORE(1, 1); SELFDESTRUCT(CALLER)`.
+    const SD_RUNTIME: [u8; 7] = [0x60, 0x01, 0x60, 0x01, 0x55, 0x33, 0xff];
+
+    /// EIP-6780 arm 1: a contract created and selfdestructed within the same
+    /// tx is destroyed — its SSTORE must NOT enter the guest's write set
+    /// (native's tree diff has nothing for it). The witness claims only the
+    /// surviving writes (sender/factory/coinbase props); before the
+    /// `is_selfdestructed` filter this batch failed verification with a
+    /// phantom (created, slot 1) write. Mirrors the corpus'
+    /// prague/eip7702 factory fixtures.
+    #[test]
+    fn selfdestruct_created_same_tx_excluded_from_write_set() {
+        // Factory: CALLDATACOPY(0,0,cds); CREATE(0,0,cds); CALL(gas, created,
+        // 0,0,0,0,0); STOP.
+        let factory_code: Vec<u8> = vec![
+            0x36, 0x60, 0x00, 0x60, 0x00, 0x37, // calldatacopy
+            0x36, 0x60, 0x00, 0x60, 0x00, 0xf0, // create
+            0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, 0x60, 0x00, // ret/arg/value zeros
+            0x85, 0x5a, 0xf1, 0x00, // dup6(addr) gas call stop
+        ];
+        // Initcode returning SD_RUNTIME: PUSH7 runtime; MSTORE@0; RETURN(25,7).
+        let mut initcode: Vec<u8> = vec![0x66];
+        initcode.extend_from_slice(&SD_RUNTIME);
+        initcode.extend_from_slice(&[0x60, 0x00, 0x52, 0x60, 0x07, 0x60, 0x19, 0xf3]);
+
+        let factory: Address = "0x00000000000000000000000000000000000fac70".parse().unwrap();
+        let coinbase: Address = "0x00000000000000000000000000000000c01badde".parse().unwrap();
+        let (sender, signed) = sign_legacy([0x51u8; 32], 0, factory, initcode, 1_000_000);
+        let created = create_address(factory, 1);
+
+        const GAS_USED: u64 = 100_000;
+        let fee = U256::from(GAS_USED) * U256::from(10u64);
+        let sender_before = U256::from(1_000_000_000_000_000_000u128);
+
+        let sender_props = encode_account_props(0, sender_before);
+        let factory_props = encode_account_props_code(1, U256::ZERO, &factory_code);
+        let coinbase_props = encode_account_props(0, U256::from(5u64));
+        let k_sender = derive_account_properties_key(&sender.into_array());
+        let k_factory = derive_account_properties_key(&factory.into_array());
+        let k_coinbase = derive_account_properties_key(&coinbase.into_array());
+        let k_created = derive_account_properties_key(&created.into_array());
+
+        let (root, leaves, siblings) = build_dense_tree(&[
+            (k_sender, AccountProperties::hash(&sender_props)),
+            (k_factory, AccountProperties::hash(&factory_props)),
+            (k_coinbase, AccountProperties::hash(&coinbase_props)),
+        ]);
+        let existing = |idx: u64| {
+            let (_, leaf) = &leaves[idx as usize];
+            StorageProof::Existing(SlotProofEntry {
+                index: idx,
+                value: leaf.value,
+                next_index: leaf.next_index,
+                siblings: siblings[idx as usize].clone(),
+            })
+        };
+
+        // Surviving after-state: sender pays, factory nonce 1->2 (CREATE),
+        // coinbase collects. The destroyed contract contributes NOTHING.
+        let sender_after = encode_account_props(1, sender_before - fee);
+        let factory_after = encode_account_props_code(2, U256::ZERO, &factory_code);
+        let coinbase_after = encode_account_props(0, U256::from(5u64) + fee);
+
+        let bi = selfdestruct_test_batch(
+            root,
+            leaves.clone(),
+            vec![
+                WriteOp::Update { index: 2 },
+                WriteOp::Update { index: 3 },
+                WriteOp::Update { index: 4 },
+            ],
+            vec![
+                (k_sender, AccountProperties::hash(&sender_after)),
+                (k_factory, AccountProperties::hash(&factory_after)),
+                (k_coinbase, AccountProperties::hash(&coinbase_after)),
+            ],
+            vec![
+                (sender, sender_after),
+                (factory, factory_after),
+                (coinbase, coinbase_after),
+            ],
+            BlockInput {
+                number: 1,
+                timestamp: 1700000000,
+                base_fee: 7,
+                gas_limit: 10_000_000,
+                coinbase,
+                prev_randao: B256::from([1u8; 32]),
+                block_header_hash: B256::ZERO,
+                storage_proofs: vec![
+                    (k_sender, existing(2)),
+                    (k_factory, existing(3)),
+                    (k_coinbase, existing(4)),
+                    (k_created, non_existence_proof(&leaves, &siblings, &k_created)),
+                ],
+                account_preimages: vec![
+                    (sender, sender_props),
+                    (factory, factory_props.clone()),
+                    (coinbase, coinbase_props),
+                ],
+                transactions: vec![TxInput {
+                    chain_id: Some(1),
+                    gas_used_override: Some(GAS_USED),
+                    force_fail: false,
+                    auth: TxAuth::L2 { signed_bytes: signed },
+                }],
+                block_hashes: vec![],
+                l2_to_l1_logs: vec![],
+                expected_tree_root: B256::ZERO,
+            },
+            vec![(alloy_primitives::keccak256(&factory_code), factory_code.clone())],
+        );
+
+        let (output, _c) = executor::execute_and_commit(&bi);
+        assert!(output.block_results[0].tx_results[0].success, "factory tx must succeed");
+    }
+
+    /// EIP-6780 arm 2: SELFDESTRUCT of a PRE-EXISTING account is only a
+    /// balance transfer post-Cancun — the account and its storage writes
+    /// survive. The witness claims the SSTORE (a tree insert); if the
+    /// selfdestruct filter over-skipped, the write would go missing and
+    /// verification would fail.
+    #[test]
+    fn selfdestruct_of_preexisting_account_keeps_storage_writes() {
+        let d_addr: Address = "0x00000000000000000000000000000000000dcafe".parse().unwrap();
+        let coinbase: Address = "0x00000000000000000000000000000000c01badde".parse().unwrap();
+        let d_code = SD_RUNTIME.to_vec();
+        let (sender, signed) = sign_legacy([0x52u8; 32], 0, d_addr, vec![], 1_000_000);
+
+        const GAS_USED: u64 = 100_000;
+        let fee = U256::from(GAS_USED) * U256::from(10u64);
+        let sender_before = U256::from(1_000_000_000_000_000_000u128);
+
+        let sender_props = encode_account_props(0, sender_before);
+        let d_props = encode_account_props_code(1, U256::ZERO, &d_code);
+        let coinbase_props = encode_account_props(0, U256::from(5u64));
+        let k_sender = derive_account_properties_key(&sender.into_array());
+        let k_d = derive_account_properties_key(&d_addr.into_array());
+        let k_coinbase = derive_account_properties_key(&coinbase.into_array());
+        let k_slot1 = derive_flat_storage_key(
+            &d_addr.into_array(),
+            &B256::from(U256::from(1u64).to_be_bytes::<32>()),
+        );
+
+        let (root, leaves, siblings) = build_dense_tree(&[
+            (k_sender, AccountProperties::hash(&sender_props)),
+            (k_d, AccountProperties::hash(&d_props)),
+            (k_coinbase, AccountProperties::hash(&coinbase_props)),
+        ]);
+        let existing = |idx: u64| {
+            let (_, leaf) = &leaves[idx as usize];
+            StorageProof::Existing(SlotProofEntry {
+                index: idx,
+                value: leaf.value,
+                next_index: leaf.next_index,
+                siblings: siblings[idx as usize].clone(),
+            })
+        };
+        // Insert predecessor for the new (D, slot 1) leaf.
+        let prev_index = leaves
+            .iter()
+            .filter(|(_, l)| l.key < k_slot1)
+            .max_by_key(|(_, l)| l.key)
+            .unwrap()
+            .0;
+
+        let sender_after = encode_account_props(1, sender_before - fee);
+        let coinbase_after = encode_account_props(0, U256::from(5u64) + fee);
+
+        let bi = selfdestruct_test_batch(
+            root,
+            leaves.clone(),
+            vec![
+                WriteOp::Update { index: 2 },
+                WriteOp::Update { index: 4 },
+                WriteOp::Insert { prev_index },
+            ],
+            vec![
+                (k_sender, AccountProperties::hash(&sender_after)),
+                (k_coinbase, AccountProperties::hash(&coinbase_after)),
+                (k_slot1, B256::from(U256::from(1u64).to_be_bytes::<32>())),
+            ],
+            vec![(sender, sender_after), (coinbase, coinbase_after)],
+            BlockInput {
+                number: 1,
+                timestamp: 1700000000,
+                base_fee: 7,
+                gas_limit: 10_000_000,
+                coinbase,
+                prev_randao: B256::from([1u8; 32]),
+                block_header_hash: B256::ZERO,
+                storage_proofs: vec![
+                    (k_sender, existing(2)),
+                    (k_d, existing(3)),
+                    (k_coinbase, existing(4)),
+                    (k_slot1, non_existence_proof(&leaves, &siblings, &k_slot1)),
+                ],
+                account_preimages: vec![
+                    (sender, sender_props),
+                    (d_addr, d_props),
+                    (coinbase, coinbase_props),
+                ],
+                transactions: vec![TxInput {
+                    chain_id: Some(1),
+                    gas_used_override: Some(GAS_USED),
+                    force_fail: false,
+                    auth: TxAuth::L2 { signed_bytes: signed },
+                }],
+                block_hashes: vec![],
+                l2_to_l1_logs: vec![],
+                expected_tree_root: B256::ZERO,
+            },
+            vec![(alloy_primitives::keccak256(&d_code), d_code.clone())],
+        );
+
+        let (output, _c) = executor::execute_and_commit(&bi);
+        assert!(output.block_results[0].tx_results[0].success, "call to D must succeed");
+    }
+
     /// Execute a dumped batch input (a divergence repro bundle or a
     /// `ZISK_DUMP_DIR` capture) through the proven executor.
     /// Invoke with:

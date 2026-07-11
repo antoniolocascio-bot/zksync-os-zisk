@@ -160,6 +160,17 @@ where
         match evm.transact(tx) {
             Ok(result_and_state) => {
                 for (addr, account) in &result_and_state.state {
+                    // EIP-6780: an account created and selfdestructed within
+                    // the same tx is destroyed — its storage never reaches
+                    // the tree. revm sets the SelfDestructed status only when
+                    // destruction actually applies (post-Cancun: created in
+                    // the same tx; revm-context journal/inner.rs EIP-6780
+                    // gate), so this cannot skip a surviving account's
+                    // writes: a pre-existing account's SELFDESTRUCT is a
+                    // balance transfer that never sets the flag.
+                    if account.is_selfdestructed() {
+                        continue;
+                    }
                     for (slot, s) in &account.storage {
                         if s.is_changed() {
                             slot_writes
