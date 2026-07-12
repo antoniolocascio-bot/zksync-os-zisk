@@ -113,6 +113,22 @@ struct DDump {
     chain_config_fri: bool,
     #[serde(default = "dflt_max_tx_gas_limit")]
     chain_config_max_tx_gas_limit: u64,
+    /// Pre-block chain position (hook commit a37838a8): both feed the
+    /// pre-block ChainStateCommitment. Old bundles (chain-start blocks)
+    /// lack them: block_number_before falls back to block.number - 1 and
+    /// the timestamp to 0.
+    #[serde(default)]
+    block_number_before: Option<u64>,
+    #[serde(default)]
+    last_block_timestamp_before: u64,
+    /// Pre-block ring head `block_hashes_before[0]` = hash of block
+    /// `number - 256` (zero for number <= 256). Needed to serve BLOCKHASH at
+    /// full 256 depth: `previous_block_hashes` carries only ring[1..256]
+    /// (blocks number-255..number-1), and from block 257 on the evicted head
+    /// is a real hash that is NOT derivable host-side (the bundle holds only
+    /// its blake commitment inside block_hashes_blake_before).
+    #[serde(default)]
+    block_hash_ring_head: String,
 }
 
 fn dflt_max_tx_gas_limit() -> u64 {
@@ -448,6 +464,14 @@ fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
             block_hashes.push((d.block.number - offset, *h));
         }
     }
+    // Ring head: hash of block N-256, evicted from previous_block_hashes but
+    // still BLOCKHASH-visible (the opcode's window is the last 256 blocks).
+    if !d.block_hash_ring_head.is_empty() {
+        let h = hb256(&d.block_hash_ring_head);
+        if !h.is_zero() && d.block.number >= 256 {
+            block_hashes.push((d.block.number - 256, h));
+        }
+    }
 
     let native_gas: u64 = d.txs.iter().map(|t| t.gas_used).sum();
     if native_gas != d.block.gas_used {
@@ -631,8 +655,11 @@ fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
     let batch_meta = BatchMeta {
         tree_root_before: root_before,
         leaf_count_before: d.leaf_count_before,
-        block_number_before: d.block.number - 1,
-        last_block_timestamp_before: 0,
+        block_number_before: d.block_number_before.unwrap_or(d.block.number - 1),
+        last_block_timestamp_before: d.last_block_timestamp_before,
+        // Taken verbatim from the bundle, never recomputed: for blocks >= 257
+        // the oldest ring entry is a real hash that is NOT derivable from the
+        // 255-entry previous_block_hashes list.
         block_hashes_blake_before: hb256(&d.block_hashes_blake_before),
         previous_block_hashes: ring,
         upgrade_tx_hash: B256::ZERO,
@@ -860,6 +887,9 @@ mod tests {
         assert!(!d.chain_config_fri);
         assert_eq!(d.chain_config_max_tx_gas_limit, 1 << 24);
         assert_eq!(d.previous_block_hashes.len(), 2);
+        // Mid-chain position fields default for chain-start bundles.
+        assert!(d.block_number_before.is_none());
+        assert_eq!(d.last_block_timestamp_before, 0);
     }
 
     /// Full-pipeline plumbing check: a self-consistent empty-block bundle
