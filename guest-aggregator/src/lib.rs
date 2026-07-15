@@ -1,5 +1,5 @@
 //! Pure parsing / validation / commitment logic for the ZiSK proof
-//! aggregator guest (plan task 2.7).
+//! aggregator guest.
 //!
 //! Everything in this library is host-testable: it depends only on `core`
 //! plus a keccak backend (the ZiSK-accelerated `alloy-primitives` native
@@ -64,7 +64,7 @@ pub const EXPECTED_N_PUBLICS: u64 = (PROGRAM_VK_WORDS + PUBLICS_WORDS) as u64;
 /// pil2-proofman v0.18.0 recursive setup
 /// (`proofman_verifier::expected_vadcop_final_proof_bytes() / 8`).
 ///
-/// Part of the proof-format pin (plan 2.2): it changes only with a
+/// Part of the proof-format pin: it changes only with a
 /// pil2-proofman upgrade, which rotates every VK anyway. A host test in
 /// `prover/` (`vadcop_body_words_matches_pinned_verifier`) asserts this
 /// constant against the real `proofman-verifier` crate at the same tag.

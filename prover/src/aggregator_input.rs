@@ -1,4 +1,4 @@
-//! Host-side input assembler for the ZiSK aggregator guest (plan 2.7).
+//! Host-side input assembler for the ZiSK aggregator guest.
 //!
 //! Takes N per-batch proofs — `cargo-zisk prove` output files with a
 //! Vadcop body (runs WITHOUT `--plonk`) or raw `get_proof_bytes()` streams

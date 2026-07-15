@@ -4,8 +4,7 @@ Runs the ethereum/execution-spec-tests corpus through production-semantics
 zksync-os, converts every executed block into a wire-v2 `BatchInput`, checks
 the ZiSK/REVM guest against native ground truth on six axes (header hash,
 tree root, state commitments, per-account after-images), and executes each
-case in `ziskemu` with the pinned guest ELF. Plan tasks 6.8/6.9; found and
-pinned defects #20–#28 (see `POC_DEFECTS.md` in the plan workspace).
+case in `ziskemu` with the pinned guest ELF.
 
 **Steady state** (established 2026-07-12, guest ELF `7cb3289f…`):
 10,369 cases → 10,336 OK, 0 panics, 26 waived (`corpus-waivers.tsv`).
@@ -86,25 +85,27 @@ emulation status, detail.
 - **Waived** — matches `corpus-waivers.tsv` (chunk + signature + bounded
   count). The 26 waived bundles are archived under
   `corpus-waived-fixtures/` (gzipped) so each waiver stays reproducible;
-  defects #26/#28 document the unreachability arguments.
+  the waiver manifest entries carry the unreachability arguments.
 
 ## When to re-run
 
 - Any guest, lib, or zksync-os-revm change (the guest ELF pin rotates).
 - Any zksync-os pin/branch move — and after protocol upgrades, alongside
-  the testnet replay (plan 1.3/6).
-- ziskos/toolchain bumps: defect #27's tripwire test in the guest signals
-  when the x=0 P-256 workaround can be dropped; re-run the p256 family then.
-- At the AtlasV4/0.4.0 guest bump: rebase the hook branch onto the new
-  line, revisit the drift checklist in plan 6.8, and re-enable the
-  blake2f/KZG/bls stub coverage question.
+  testnet replays.
+- ziskos/toolchain bumps: the guest's x=0 P-256 tripwire test signals when
+  that workaround can be dropped (the underlying hint bug is fixed on the
+  ZiSK 1.0 line); re-run the p256 family then.
+- At the AtlasV4/0.4.0 guest bump: move to the 0.4.0-line hook (upstream
+  PR; see Setup), account for the line's semantic drift (blake2s-merkle
+  header tx/receipt roots, Pectra fee/precompile semantics), and re-visit
+  the blake2f/KZG/bls stub coverage question.
 
 ## Known sharp edges
 
 - The corpus native build must use the `evm_tester_prod` feature set
   (production fee/precompile semantics). The stock `evm_tester` features
   emulate Ethereum semantics (base-fee burn, mocked precompiles) and make
-  every dump diverge from the guest — see plan 6.8 notes (2026-07-10).
+  every dump diverge from the guest.
 - The runner force-enables all evm_tester index entries (worktree-local
   sed); fixture verdict FAILs under production semantics are expected and
   irrelevant — only executed blocks and their dumps matter.

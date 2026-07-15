@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Target-emulation coverage lane (plan 6.8, defect #21).
+# Target-emulation coverage lane for the ZiSK/REVM guest.
 #
 # Drives ethereum/execution-spec-tests fixtures through zksync-os's
 # evm_tester with the rig state-dump hook enabled, converts every dumped

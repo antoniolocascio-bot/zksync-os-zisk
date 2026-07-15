@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Aggregator-guest step-cost measurement (plan 2.7).
+# Aggregator-guest step-cost measurement.
 #
 # Builds the aggregator guest ELF and the host-side input assembler,
 # assembles a framed guest input from per-batch vadcop_final proofs, and
@@ -9,7 +9,7 @@
 #
 #   steps/proof = (steps(2N) - steps(N)) / N
 #
-# which is the number that gates the design (plan 2.7: expect ~10^6–10^7
+# which is the number that gates the design (expect ~10^6–10^7
 # steps/proof; a 10-batch range must fit one execution, i.e. stay far
 # below the 2^36-step ceiling with the recursion stages on top).
 #
@@ -31,7 +31,7 @@
 # ceiling (default 2^36-1) and exits `Error during emulation:
 # EmulationNoCompleted` (~8 min wall per run on this box). An invalid
 # proof therefore costs the FULL step budget, not a fast failure. Design
-# consequence (recorded in plan 2.7): the aggregation stage's cost gate
+# consequence: the aggregation stage's cost gate
 # must budget WORST-CASE verification cost for invalid submissions — a
 # malicious/garbage proof burns prover time, never soundness (a
 # non-completing execution yields no proof). This script bounds its own
@@ -163,5 +163,5 @@ echo "steps($((2 * N)) proofs)        = $S2"
 echo "marginal steps/proof    = $MARGINAL"
 echo "fixed overhead (approx) = $((S1 - MARGINAL * N))"
 echo
-echo "gate (plan 2.7): expected ~10^6–10^7 steps/proof; a 10-batch range"
+echo "gate: expected ~10^6–10^7 steps/proof; a 10-batch range"
 echo "needs 10 * marginal + overhead well below the 2^36-step ceiling."

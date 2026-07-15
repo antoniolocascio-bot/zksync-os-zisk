@@ -85,7 +85,7 @@ precompile_stub!(bls12_381_pairing_check_c(pairs: *const u8, num_pairs: usize) -
 precompile_stub!(bls12_381_fp_to_g1_c(ret: *mut u8, fp: *const u8) -> u8);
 precompile_stub!(bls12_381_fp2_to_g2_c(ret: *mut u8, fp2: *const u8) -> u8);
 
-// ==================== wired crypto hooks (plan 6.9) ====================
+// ======================== wired crypto hooks ========================
 //
 // Thin unsafe pointer shims over the safe bodies in `hooks`. Pointer widths
 // are fixed by the callers in `lib/src/crypto/impls.rs`, which always pass

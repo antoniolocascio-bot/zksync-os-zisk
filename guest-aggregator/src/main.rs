@@ -1,5 +1,5 @@
 //! ZiSK aggregator guest: verifies N `vadcop_final` proofs of the STF guest
-//! and commits to their chained batch commitments (plan task 2.7).
+//! and commits to their chained batch commitments.
 //!
 //! Verification runs pil2-proofman's `proofman-verifier` via ZiSK's own
 //! `ziskos::zisklib::verify_zisk_proof` (no_std, Poseidon2-16 transcript and

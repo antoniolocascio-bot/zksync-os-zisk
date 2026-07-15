@@ -1,4 +1,4 @@
-//! Assemble an input file for the ZiSK aggregator guest (plan 2.7).
+//! Assemble an input file for the ZiSK aggregator guest.
 //!
 //! Inputs are per-batch `vadcop_final` proofs, given either as `cargo-zisk
 //! prove` output files with a Vadcop body (runs WITHOUT `--plonk`) or as
