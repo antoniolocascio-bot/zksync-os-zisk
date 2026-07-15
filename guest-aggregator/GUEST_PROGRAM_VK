@@ -1,0 +1,8 @@
+# programVK (ZiSK ROM merkle root) of the aggregator guest ELF.
+# Derived 2026-07-15 via `cargo-zisk program-setup` (ZiSK v0.18.0).
+# Serialization: the four ROM root-hash u64 limbs, big-endian, in order.
+# This VK is what L1 pins for range-aggregated proofs; its publics commit
+# to (inner STF programVK, vadcopVK, chained batch commitments).
+# Root hash limbs: [11041874105492891166, 8339606414831788576,
+#                   14079091220270489896, 13763747172716049884]
+0x993c9dff207ce61e73bc3bd9629e2220c362fadee08b2128bf02a7215006f5dc
