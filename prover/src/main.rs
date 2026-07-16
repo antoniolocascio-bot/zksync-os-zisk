@@ -3,8 +3,17 @@
 //! External prover that polls the ZKsync OS server for ZiSK batch data,
 //! generates STARK + SNARK proofs using `cargo-zisk`, and submits the
 //! results back to the server for multi-proof composition.
+//!
+//! Two modes, matching the server's `zisk_aggregation` setting:
+//! - Per-batch (default): each batch is proven with the PLONK wrap and the
+//!   768-byte SNARK is submitted — one ZiSK proof per batch on L1.
+//! - Aggregated (`--aggregation`, with `--aggregator-elf`): each batch is
+//!   proven WITHOUT the wrap and the raw `vadcop_final` stream is
+//!   submitted; the daemon also polls `/ZiSK-AGG` for range jobs, verifies
+//!   the range's streams inside the aggregator guest, and submits one
+//!   PLONK-wrapped range proof — one ZiSK proof per Airbender SNARK range.
 
-use zksync_os_zisk_prover_service::{metrics, prover, sequencer_client};
+use zksync_os_zisk_prover_service::{prover, sequencer_client};
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -33,6 +42,17 @@ struct Args {
     /// Path to the ZiSK PLONK proving key directory (cargo-zisk `-w`).
     #[arg(long, alias = "proving-key-snark")]
     proving_key_plonk: PathBuf,
+
+    /// Aggregated mode: prove batches WITHOUT the PLONK wrap and submit
+    /// their vadcop_final streams; poll /ZiSK-AGG for range jobs and prove
+    /// them with the aggregator guest. The server must run with
+    /// zisk_aggregation.enabled.
+    #[arg(long, requires = "aggregator_elf")]
+    aggregation: bool,
+
+    /// Path to the ZiSK aggregator guest ELF (required with --aggregation).
+    #[arg(long, requires = "aggregation")]
+    aggregator_elf: Option<PathBuf>,
 
     /// Disable GPU proving (cargo-zisk runs CPU-only).
     #[arg(long)]
@@ -135,18 +155,24 @@ async fn main() -> anyhow::Result<()> {
         sequencer_url = %args.sequencer_url,
         zisk_binary = %args.zisk_binary.display(),
         elf_path = %args.elf_path.display(),
+        aggregation = args.aggregation,
+        aggregator_elf = ?args.aggregator_elf,
         supported_vk_hashes = ?supported_vks,
         vk_filter = if supported_vks.is_empty() { "disabled (accepts all)" } else { "enabled" },
         "Starting ZiSK prover service"
     );
 
     // Validate paths.
-    for (name, path) in [
+    let mut required_paths = vec![
         ("zisk_binary", &args.zisk_binary),
         ("elf_path", &args.elf_path),
         ("proving_key", &args.proving_key),
         ("proving_key_plonk", &args.proving_key_plonk),
-    ] {
+    ];
+    if let Some(ref aggregator_elf) = args.aggregator_elf {
+        required_paths.push(("aggregator_elf", aggregator_elf));
+    }
+    for (name, path) in required_paths {
         anyhow::ensure!(path.exists(), "{name} does not exist: {}", path.display());
     }
 
@@ -162,6 +188,7 @@ async fn main() -> anyhow::Result<()> {
     let prover = prover::ZiskProver::new(
         args.zisk_binary,
         args.elf_path,
+        args.aggregator_elf.clone(),
         args.proving_key,
         args.proving_key_plonk,
         args.work_dir,
@@ -186,9 +213,13 @@ async fn main() -> anyhow::Result<()> {
         cancel_clone.cancel();
     });
 
-    // One-time ROM setup for the guest ELF (idempotent, cheap when cached).
+    // One-time ROM setup for the guest ELF(s) (idempotent, cheap when cached).
     if !prover.ensure_program_setup(&cancel).await? {
         tracing::info!("cancelled during program-setup, exiting");
+        return Ok(());
+    }
+    if args.aggregation && !prover.ensure_aggregator_program_setup(&cancel).await? {
+        tracing::info!("cancelled during aggregator program-setup, exiting");
         return Ok(());
     }
 
@@ -198,7 +229,55 @@ async fn main() -> anyhow::Result<()> {
             break;
         }
 
-        // Poll for work.
+        // Aggregated mode: range jobs first — a formed range is the last
+        // missing piece of its MultiProof, so it beats new per-batch work.
+        if args.aggregation {
+            match client.pick_next_aggregation_job().await {
+                Ok(Some(job)) => {
+                    tracing::info!(
+                        from = job.from_batch,
+                        to = job.to_batch,
+                        proofs = job.streams.len(),
+                        "picked ZiSK aggregation range"
+                    );
+                    let streams: Vec<Vec<u8>> =
+                        job.streams.into_iter().map(|(_, stream)| stream).collect();
+                    let result = prover
+                        .generate_aggregated_proof(&streams, job.from_batch, job.to_batch, &cancel)
+                        .await?;
+                    let Some(result) = result else {
+                        tracing::info!("aggregated proof cancelled, exiting");
+                        break;
+                    };
+                    client
+                        .submit_aggregated_proof(
+                            job.from_batch,
+                            job.to_batch,
+                            &result.proof,
+                            &result.public_values,
+                        )
+                        .await?;
+                    tracing::info!(
+                        from = job.from_batch,
+                        to = job.to_batch,
+                        "aggregated proof submitted"
+                    );
+
+                    proofs_generated += 1;
+                    if args.iterations > 0 && proofs_generated >= args.iterations {
+                        tracing::info!(proofs_generated, "iteration limit reached");
+                        break;
+                    }
+                    continue;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!("aggregation poll failed: {e:#}");
+                }
+            }
+        }
+
+        // Poll for per-batch work.
         let batch = match client.pick_next_batch().await {
             Ok(Some(batch)) => batch,
             Ok(None) => {
@@ -240,32 +319,47 @@ async fn main() -> anyhow::Result<()> {
         );
 
         // Prove. Uses tokio::process internally — cancellation is instant.
-        let result = prover.generate_proof(
-            &batch.zisk_data,
-            batch.batch_number,
-            &cancel,
-        ).await?;
-
-        let Some(result) = result else {
-            tracing::info!("proof cancelled, exiting");
-            break;
-        };
-
-        tracing::info!(
-            batch = batch.batch_number,
-            proof_bytes = result.proof.len(),
-            pv_bytes = result.public_values.len(),
-            "proof generated"
-        );
-
-        client
-            .submit_zisk_proof(
-                batch.batch_number,
-                &batch.vk_hash,
-                &result.proof,
-                &result.public_values,
-            )
-            .await?;
+        if args.aggregation {
+            // Aggregated mode: keep the vadcop_final proof (no PLONK wrap)
+            // and submit the stream; its publics travel inside it.
+            let result = prover
+                .generate_vadcop_proof(&batch.zisk_data, batch.batch_number, &cancel)
+                .await?;
+            let Some(stream) = result else {
+                tracing::info!("proof cancelled, exiting");
+                break;
+            };
+            tracing::info!(
+                batch = batch.batch_number,
+                stream_bytes = stream.len(),
+                "vadcop_final proof generated"
+            );
+            client
+                .submit_zisk_proof(batch.batch_number, &batch.vk_hash, &stream, &[])
+                .await?;
+        } else {
+            let result = prover
+                .generate_proof(&batch.zisk_data, batch.batch_number, &cancel)
+                .await?;
+            let Some(result) = result else {
+                tracing::info!("proof cancelled, exiting");
+                break;
+            };
+            tracing::info!(
+                batch = batch.batch_number,
+                proof_bytes = result.proof.len(),
+                pv_bytes = result.public_values.len(),
+                "proof generated"
+            );
+            client
+                .submit_zisk_proof(
+                    batch.batch_number,
+                    &batch.vk_hash,
+                    &result.proof,
+                    &result.public_values,
+                )
+                .await?;
+        }
 
         tracing::info!(batch = batch.batch_number, "proof submitted");
 

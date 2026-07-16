@@ -5,6 +5,15 @@
 //! takes the batch all the way to a BN254 PLONK SNARK. A one-time
 //! `program-setup` per guest ELF generates the ROM setup the prover needs.
 //!
+//! Three proving flows share the pipeline:
+//! - [`ZiskProver::generate_proof`] — per-batch STF proof with the PLONK
+//!   wrap (`--plonk`), for the server's per-batch mode.
+//! - [`ZiskProver::generate_vadcop_proof`] — per-batch STF proof WITHOUT
+//!   `--plonk`: the `vadcop_final` proof stream is kept and submitted so
+//!   the aggregator guest can verify it in-zkVM (aggregated mode).
+//! - [`ZiskProver::generate_aggregated_proof`] — the aggregator guest over
+//!   N per-batch streams, with the PLONK wrap: one range proof for L1.
+//!
 //! Uses `tokio::process` so subprocess waits can be cancelled instantly
 //! via `CancellationToken` — no busy-polling.
 
@@ -18,8 +27,8 @@ const ZISK_SNARK_PROOF_BYTES: usize = 768;
 // programVK(32) + guest publics(256: ziskos's full 64-word output region,
 // the guest's 8 commitment words first, zeros after) + vadcopVK(32).
 // A real cargo-zisk v0.18 proof file carries the full 256-byte publics
-// region (draft-era code assumed 192 — settled by the first real parse,
-// plan item 2.1; regression-tested against a committed real proof file).
+// region (draft-era code assumed 192 — settled by the first real parse;
+// regression-tested against a committed real proof file).
 const ZISK_PUBLIC_VALUES_BYTES: usize = 320;
 /// Number of u64 words in the guest-ELF ROM root (program VK) and in the
 /// vadcop-final verification key.
@@ -35,6 +44,8 @@ pub struct ZiskSnarkOutput {
 pub struct ZiskProver {
     binary: PathBuf,
     elf_path: PathBuf,
+    /// The aggregator guest ELF (aggregated mode only).
+    aggregator_elf_path: Option<PathBuf>,
     proving_key: PathBuf,
     proving_key_plonk: PathBuf,
     work_dir_base: PathBuf,
@@ -43,31 +54,62 @@ pub struct ZiskProver {
 }
 
 impl ZiskProver {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         binary: PathBuf,
         elf_path: PathBuf,
+        aggregator_elf_path: Option<PathBuf>,
         proving_key: PathBuf,
         proving_key_plonk: PathBuf,
         work_dir_base: PathBuf,
         gpu: bool,
         asm_emulator: bool,
     ) -> Self {
-        Self { binary, elf_path, proving_key, proving_key_plonk, work_dir_base, gpu, asm_emulator }
+        Self {
+            binary,
+            elf_path,
+            aggregator_elf_path,
+            proving_key,
+            proving_key_plonk,
+            work_dir_base,
+            gpu,
+            asm_emulator,
+        }
     }
 
-    /// One-time per-ELF ROM setup (`cargo-zisk program-setup`). Must run
-    /// before the first `prove` for a given guest ELF; subsequent runs are
-    /// cheap. Returns `Ok(false)` if cancelled.
+    fn aggregator_elf(&self) -> anyhow::Result<&Path> {
+        self.aggregator_elf_path
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("no aggregator ELF configured (--aggregator-elf)"))
+    }
+
+    /// One-time ROM setup for the STF guest ELF (`cargo-zisk
+    /// program-setup`). Must run before the first `prove` for a given guest
+    /// ELF; subsequent runs are cheap. Returns `Ok(false)` if cancelled.
     pub async fn ensure_program_setup(&self, cancel: &CancellationToken) -> anyhow::Result<bool> {
+        let elf = self.elf_path.clone();
+        self.program_setup(&elf, cancel).await
+    }
+
+    /// One-time ROM setup for the aggregator guest ELF (aggregated mode).
+    pub async fn ensure_aggregator_program_setup(
+        &self,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<bool> {
+        let elf = self.aggregator_elf()?.to_path_buf();
+        self.program_setup(&elf, cancel).await
+    }
+
+    async fn program_setup(&self, elf: &Path, cancel: &CancellationToken) -> anyhow::Result<bool> {
         let mut args = vec![
             "program-setup".to_string(),
-            "-e".into(), p(&self.elf_path),
+            "-e".into(), p(elf),
             "-k".into(), p(&self.proving_key),
         ];
         if self.gpu {
             args.push("-g".into());
         }
-        tracing::info!(elf = %self.elf_path.display(), "running program-setup");
+        tracing::info!(elf = %elf.display(), "running program-setup");
         let start = Instant::now();
         let done = run_cancellable(&self.binary, &args, cancel).await?;
         if done {
@@ -77,7 +119,8 @@ impl ZiskProver {
         Ok(done)
     }
 
-    /// Generate a ZiSK SNARK proof. Returns `Ok(None)` if cancelled.
+    /// Generate a per-batch ZiSK SNARK proof (PLONK wrap). Returns
+    /// `Ok(None)` if cancelled.
     ///
     /// This is an async function — subprocesses are managed with `tokio::process`
     /// and cancellation uses `select!` against the token (instant response).
@@ -89,12 +132,163 @@ impl ZiskProver {
     ) -> anyhow::Result<Option<ZiskSnarkOutput>> {
         let start = Instant::now();
         let work_dir = self.work_dir_base.join(format!("batch_{batch_number}"));
-
         let _ = tokio::fs::remove_dir_all(&work_dir).await;
         tokio::fs::create_dir_all(&work_dir).await?;
 
-        let result = self.run_pipeline(zisk_bincode, batch_number, &work_dir, cancel).await;
+        let result = async {
+            let input_path = work_dir.join("input.bin");
+            write_zisk_input(&input_path, zisk_bincode)?;
+            let proof_path = work_dir.join("proof.bin");
+            tracing::info!(batch_number, "proving (STARK + PLONK wrap) starting");
+            if !self
+                .run_prove(&self.elf_path, &input_path, &proof_path, true, cancel)
+                .await?
+            {
+                return Ok(None);
+            }
+            parse_proof_file(&proof_path).map(Some)
+        }
+        .await;
 
+        self.finish_run(&format!("batch {batch_number}"), &work_dir, start, result)
+            .await
+    }
+
+    /// Generate a per-batch `vadcop_final` proof stream (no PLONK wrap) —
+    /// the per-batch flow of AGGREGATED mode. The returned bytes are the
+    /// exact `get_proof_bytes()` stream the aggregator guest verifies.
+    /// Returns `Ok(None)` if cancelled.
+    pub async fn generate_vadcop_proof(
+        &self,
+        zisk_bincode: &[u8],
+        batch_number: u64,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        let start = Instant::now();
+        let work_dir = self.work_dir_base.join(format!("batch_{batch_number}"));
+        let _ = tokio::fs::remove_dir_all(&work_dir).await;
+        tokio::fs::create_dir_all(&work_dir).await?;
+
+        let result = async {
+            let input_path = work_dir.join("input.bin");
+            write_zisk_input(&input_path, zisk_bincode)?;
+            let proof_path = work_dir.join("proof.bin");
+            tracing::info!(batch_number, "proving (STARK, vadcop_final kept) starting");
+            if !self
+                .run_prove(&self.elf_path, &input_path, &proof_path, false, cancel)
+                .await?
+            {
+                return Ok(None);
+            }
+            vadcop_stream_from_proof_file(&proof_path).map(Some)
+        }
+        .await;
+
+        self.finish_run(&format!("batch {batch_number}"), &work_dir, start, result)
+            .await
+    }
+
+    /// Prove an aggregation range: verify the N per-batch `vadcop_final`
+    /// streams in the aggregator guest and wrap the result in a PLONK SNARK
+    /// for L1. `streams` must be in batch order; they are validated and
+    /// framed by the input assembler before proving. Returns `Ok(None)` if
+    /// cancelled.
+    pub async fn generate_aggregated_proof(
+        &self,
+        streams: &[Vec<u8>],
+        from_batch: u64,
+        to_batch: u64,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<Option<ZiskSnarkOutput>> {
+        let aggregator_elf = self.aggregator_elf()?.to_path_buf();
+        let input = crate::aggregator_input::assemble(streams)?;
+
+        let start = Instant::now();
+        let work_dir = self
+            .work_dir_base
+            .join(format!("range_{from_batch}_{to_batch}"));
+        let _ = tokio::fs::remove_dir_all(&work_dir).await;
+        tokio::fs::create_dir_all(&work_dir).await?;
+
+        let result = async {
+            // The assembled input is already ziskos-framed (count frame +
+            // one frame per stream) — written raw, unlike the per-batch
+            // bincode which gets its single frame from `write_zisk_input`.
+            let input_path = work_dir.join("input.bin");
+            std::fs::write(&input_path, &input)?;
+            let proof_path = work_dir.join("proof.bin");
+            tracing::info!(
+                from_batch,
+                to_batch,
+                proofs = streams.len(),
+                "proving aggregation range (in-zkVM verification + PLONK wrap) starting"
+            );
+            if !self
+                .run_prove(&aggregator_elf, &input_path, &proof_path, true, cancel)
+                .await?
+            {
+                return Ok(None);
+            }
+            parse_proof_file(&proof_path).map(Some)
+        }
+        .await;
+
+        self.finish_run(&format!("range {from_batch}..{to_batch}"), &work_dir, start, result)
+            .await
+    }
+
+    /// Shared `cargo-zisk prove` invocation (`-y` verifies the vadcop-final
+    /// proof; with `plonk` the PLONK proving key and `--plonk` wrap are
+    /// added). Returns `Ok(false)` if cancelled.
+    async fn run_prove(
+        &self,
+        elf: &Path,
+        input_path: &Path,
+        proof_path: &Path,
+        plonk: bool,
+        cancel: &CancellationToken,
+    ) -> anyhow::Result<bool> {
+        let mut args = vec![
+            "prove".to_string(),
+            "-e".into(), p(elf),
+            "-i".into(), p(input_path),
+            "-k".into(), p(&self.proving_key),
+        ];
+        if plonk {
+            args.push("-w".into());
+            args.push(p(&self.proving_key_plonk));
+            args.push("--plonk".into());
+        }
+        args.push("-y".into());
+        args.push("-o".into());
+        args.push(p(proof_path));
+        if self.gpu {
+            args.push("-g".into());
+        }
+        if !self.asm_emulator {
+            // Standard emulator: slower witness-gen but no memlock
+            // requirements (the ASM emulator needs a high memlock ulimit,
+            // often unavailable in containers).
+            args.push("-l".into());
+        }
+        let prove_start = Instant::now();
+        if !run_cancellable(&self.binary, &args, cancel).await? {
+            return Ok(false);
+        }
+        ZISK_PROVER_METRICS.prove_time.observe(prove_start.elapsed());
+        anyhow::ensure!(proof_path.exists(), "proof file not generated");
+        Ok(true)
+    }
+
+    /// Record metrics/logs for a finished proving run and clean up the work
+    /// dir (kept on failure for debugging).
+    async fn finish_run<T>(
+        &self,
+        label: &str,
+        work_dir: &Path,
+        start: Instant,
+        result: anyhow::Result<Option<T>>,
+    ) -> anyhow::Result<Option<T>> {
         let elapsed = start.elapsed();
         ZISK_PROVER_METRICS.proof_generation_time.observe(elapsed);
         let outcome = match &result {
@@ -106,65 +300,22 @@ impl ZiskProver {
 
         match &result {
             Ok(Some(_)) => {
-                tracing::info!(batch_number, elapsed_secs = elapsed.as_secs(), "proof generated");
+                tracing::info!(label, elapsed_secs = elapsed.as_secs(), "proof generated");
                 let _ = tokio::fs::remove_dir_all(&work_dir).await;
             }
             Ok(None) => {
-                tracing::info!(batch_number, "proof cancelled by shutdown");
+                tracing::info!(label, "proof cancelled by shutdown");
                 let _ = tokio::fs::remove_dir_all(&work_dir).await;
             }
             Err(e) => {
                 tracing::error!(
-                    batch_number, elapsed_secs = elapsed.as_secs(),
+                    label, elapsed_secs = elapsed.as_secs(),
                     path = %work_dir.display(), "proof failed: {e}"
                 );
             }
         }
 
         result
-    }
-
-    async fn run_pipeline(
-        &self,
-        zisk_bincode: &[u8],
-        batch_number: u64,
-        work_dir: &Path,
-        cancel: &CancellationToken,
-    ) -> anyhow::Result<Option<ZiskSnarkOutput>> {
-        let input_path = work_dir.join("input.bin");
-        write_zisk_input(&input_path, zisk_bincode)?;
-
-        // Integrated STARK aggregation + PLONK SNARK wrap (`-y` verifies the
-        // vadcop-final proof before wrapping).
-        let proof_path = work_dir.join("proof.bin");
-        let mut args = vec![
-            "prove".to_string(),
-            "-e".into(), p(&self.elf_path),
-            "-i".into(), p(&input_path),
-            "-k".into(), p(&self.proving_key),
-            "-w".into(), p(&self.proving_key_plonk),
-            "--plonk".into(),
-            "-y".into(),
-            "-o".into(), p(&proof_path),
-        ];
-        if self.gpu {
-            args.push("-g".into());
-        }
-        if !self.asm_emulator {
-            // Standard emulator: slower witness-gen but no memlock
-            // requirements (the ASM emulator needs a high memlock ulimit,
-            // often unavailable in containers).
-            args.push("-l".into());
-        }
-        tracing::info!(batch_number, "proving (STARK + PLONK wrap) starting");
-        let prove_start = Instant::now();
-        if !run_cancellable(&self.binary, &args, cancel).await? {
-            return Ok(None);
-        }
-        ZISK_PROVER_METRICS.prove_time.observe(prove_start.elapsed());
-
-        anyhow::ensure!(proof_path.exists(), "proof file not generated");
-        parse_proof_file(&proof_path).map(Some)
     }
 }
 
@@ -178,7 +329,7 @@ fn write_zisk_input(path: &Path, bincode: &[u8]) -> anyhow::Result<()> {
     buf.extend_from_slice(&len.to_le_bytes());
     buf.extend_from_slice(bincode);
     let padding = (8 - ((8 + bincode.len()) % 8)) % 8;
-    buf.extend(std::iter::repeat(0u8).take(padding));
+    buf.extend(std::iter::repeat_n(0u8, padding));
     std::fs::write(path, &buf)?;
     Ok(())
 }

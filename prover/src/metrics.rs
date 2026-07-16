@@ -10,6 +10,10 @@ pub enum Method {
     Pick,
     #[metrics(rename = "submit")]
     Submit,
+    #[metrics(rename = "pick_aggregation")]
+    PickAggregation,
+    #[metrics(rename = "submit_aggregation")]
+    SubmitAggregation,
 }
 
 impl std::fmt::Display for Method {
@@ -17,6 +21,8 @@ impl std::fmt::Display for Method {
         match self {
             Method::Pick => write!(f, "pick"),
             Method::Submit => write!(f, "submit"),
+            Method::PickAggregation => write!(f, "pick_aggregation"),
+            Method::SubmitAggregation => write!(f, "submit_aggregation"),
         }
     }
 }

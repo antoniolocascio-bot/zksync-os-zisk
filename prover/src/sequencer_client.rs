@@ -2,7 +2,11 @@
 //!
 //! Uses the same pick/submit model as the Airbender prover:
 //! - `POST /ZiSK/pick` — get assigned batch with ZiSK data
-//! - `POST /ZiSK/submit` — submit ZiSK SNARK proof
+//! - `POST /ZiSK/submit` — submit the per-batch proof (PLONK-wrapped SNARK
+//!   in per-batch mode, raw `vadcop_final` stream in aggregated mode)
+//! - `POST /ZiSK-AGG/pick` — get an assigned aggregation range with its
+//!   buffered per-batch `vadcop_final` streams
+//! - `POST /ZiSK-AGG/submit` — submit the aggregated range proof
 //!
 //! Supports HTTP Basic Auth via credentials embedded in the URL
 //! (e.g. `http://user:pass@host:port`). Credentials are extracted
@@ -23,6 +27,14 @@ pub struct ZiskBatchData {
     pub zisk_data: Vec<u8>,
 }
 
+/// An aggregation job returned by `/ZiSK-AGG/pick`: the per-batch
+/// `vadcop_final` streams of one Airbender SNARK range, in batch order.
+pub struct ZiskAggregationJobData {
+    pub from_batch: u64,
+    pub to_batch: u64,
+    pub streams: Vec<(u64, Vec<u8>)>,
+}
+
 /// HTTP client for the server's prover API.
 pub struct SequencerClient {
     base_url: Url,
@@ -40,6 +52,27 @@ struct PickResponse {
 #[derive(Serialize)]
 struct ZiskSubmitPayload {
     batch_number: u64,
+    proof: String,
+    public_values: String,
+}
+
+#[derive(Deserialize)]
+struct AggregationBatchProof {
+    batch_number: u64,
+    proof: String,
+}
+
+#[derive(Deserialize)]
+struct AggregationPickResponse {
+    from_batch_number: u64,
+    to_batch_number: u64,
+    proofs: Vec<AggregationBatchProof>,
+}
+
+#[derive(Serialize)]
+struct AggregationSubmitPayload {
+    from_batch_number: u64,
+    to_batch_number: u64,
     proof: String,
     public_values: String,
 }
@@ -124,7 +157,10 @@ impl SequencerClient {
         }))
     }
 
-    /// Submit a ZiSK SNARK proof for a batch.
+    /// Submit a per-batch ZiSK proof. In per-batch mode `proof` is the
+    /// PLONK-wrapped SNARK and `public_values` the 320-byte wire layout;
+    /// in aggregated mode `proof` is the raw `vadcop_final` stream and
+    /// `public_values` must be empty.
     pub async fn submit_zisk_proof(
         &self,
         batch_number: u64,
@@ -150,6 +186,86 @@ impl SequencerClient {
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
             anyhow::bail!("ZiSK submit failed for batch {batch_number}: {body}");
+        }
+
+        Ok(())
+    }
+
+    /// Pick the next assigned ZiSK aggregation range from the server.
+    ///
+    /// Returns `None` if no ranges are available (or aggregation is not
+    /// enabled server-side). The returned streams are validated to be in
+    /// contiguous batch order.
+    pub async fn pick_next_aggregation_job(
+        &self,
+    ) -> anyhow::Result<Option<ZiskAggregationJobData>> {
+        let url = format!(
+            "{}prover-jobs/v1/ZiSK-AGG/pick?id={}",
+            self.base_url, self.prover_id
+        );
+
+        let started_at = Instant::now();
+        let resp = self.client.post(&url).send().await?;
+        ZISK_PROVER_METRICS.http_latency[&Method::PickAggregation].observe(started_at.elapsed());
+
+        if resp.status() == reqwest::StatusCode::NO_CONTENT
+            || resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
+        {
+            return Ok(None);
+        }
+        if !resp.status().is_success() {
+            anyhow::bail!("ZiSK aggregation pick failed: {}", resp.status());
+        }
+
+        let pick: AggregationPickResponse = resp.json().await?;
+        let (from_batch, to_batch) = (pick.from_batch_number, pick.to_batch_number);
+        let expected: Vec<u64> = (from_batch..=to_batch).collect();
+        let got: Vec<u64> = pick.proofs.iter().map(|p| p.batch_number).collect();
+        anyhow::ensure!(
+            got == expected,
+            "aggregation job {from_batch}..{to_batch} carries batches {got:?}, expected {expected:?}"
+        );
+        let streams = pick
+            .proofs
+            .into_iter()
+            .map(|p| Ok((p.batch_number, BASE64.decode(&p.proof)?)))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+
+        Ok(Some(ZiskAggregationJobData {
+            from_batch,
+            to_batch,
+            streams,
+        }))
+    }
+
+    /// Submit an aggregated ZiSK range proof (768-byte SNARK + 320-byte
+    /// public values of the aggregator guest).
+    pub async fn submit_aggregated_proof(
+        &self,
+        from_batch: u64,
+        to_batch: u64,
+        proof: &[u8],
+        public_values: &[u8],
+    ) -> anyhow::Result<()> {
+        let payload = AggregationSubmitPayload {
+            from_batch_number: from_batch,
+            to_batch_number: to_batch,
+            proof: BASE64.encode(proof),
+            public_values: BASE64.encode(public_values),
+        };
+
+        let url = format!(
+            "{}prover-jobs/v1/ZiSK-AGG/submit?id={}",
+            self.base_url, self.prover_id
+        );
+
+        let started_at = Instant::now();
+        let resp = self.client.post(&url).json(&payload).send().await?;
+        ZISK_PROVER_METRICS.http_latency[&Method::SubmitAggregation].observe(started_at.elapsed());
+
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            anyhow::bail!("ZiSK aggregation submit failed for range {from_batch}..{to_batch}: {body}");
         }
 
         Ok(())
