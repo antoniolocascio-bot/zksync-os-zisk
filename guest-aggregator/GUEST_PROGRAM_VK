@@ -1,19 +1,13 @@
-# programVK (ZiSK ROM merkle root) of the aggregator guest ELF.
-# Serialization: the four ROM root-hash u64 limbs, big-endian, in order.
-# This VK is what L1 pins for range-aggregated proofs; its publics commit
-# to (inner STF programVK, rootCVadcopFinal, chained batch public inputs).
-#
-# STALE — pending re-derivation. The committed output changed on
-# 2026-07-15 to the MultiProofVerifier-aligned binding digest
-# (keccak256(innerProgramVK ‖ rootCVadcopFinal ‖ chainedPI), see
-# BINDING_VECTOR.md), which rotates the ELF (new sha256
-# 2e39b6ac09c5ffca754d710c3b348b494fcc5dc36fd21be1c38b13767b394663).
-# Re-derive with `cargo-zisk program-setup` (ZiSK v0.18.0) on a prover
-# box and replace this note with the new value.
-#
-# History:
-# 2026-07-15 — VK of the retired rolling-fold binding (full-width keccak,
-# zero seed, LE limb packing), derived via `cargo-zisk program-setup`:
-#   0x993c9dff207ce61e73bc3bd9629e2220c362fadee08b2128bf02a7215006f5dc
-#   root-hash limbs: [11041874105492891166, 8339606414831788576,
-#                     14079091220270489896, 13763747172716049884]
+# programVK (ZiSK ROM merkle root) of the aggregator guest ELF with the
+# L1-aligned binding fold (digest = keccak(innerVK ‖ rootC ‖ chainedPI),
+# chainedPI = the contract's _computeZKsyncOSHash chain).
+# Derived 2026-07-16 via `cargo-zisk program-setup` (ZiSK v0.18.0) on a
+# NATIVE cargo-zisk build, ELF sha256 bc2233cc53b5b183… — native builds
+# are NOT machine-deterministic; establish the containerized reproducible
+# build (as the STF guest has) and re-derive before any L1 pinning.
+# Root hash limbs: [5493673665871439133, 9312219928218982884,
+#                   6821400927643281845, 2102916816364401236]
+0x4c3d7317a62f651d813ba6afbbce59e45eaa7c009ab2a9b51d2f0fb3e7987254
+
+# History: 0x993c9dff207ce61e73bc3bd9629e2220c362fadee08b2128bf02a7215006f5dc
+# (2026-07-15, retired pre-L1-alignment fold).
