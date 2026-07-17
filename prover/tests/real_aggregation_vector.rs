@@ -13,8 +13,7 @@
 use zksync_os_zisk_guest_aggregator as agg;
 use zksync_os_zisk_prover_service::aggregator_input::load_proof_stream;
 
-const INNER_PROGRAM_VK: &str =
-    "481748830df5c3b7aa5522333ace2c4b533352637b92fd3c83ecc506c5104ead";
+const INNER_PROGRAM_VK: &str = "481748830df5c3b7aa5522333ace2c4b533352637b92fd3c83ecc506c5104ead";
 const ROOT_C_VADCOP_FINAL: &str =
     "cf2a309856f107b143836ada112806da71ae11567fa3f2d2050baba5381c7b7d";
 const COMMITMENTS: [&str; 4] = [
@@ -66,8 +65,16 @@ fn real_proofs_reproduce_binding_vector() {
             i + 1
         );
         if i == 0 {
-            assert_eq!(vk_hex(frame.program_vk()), INNER_PROGRAM_VK, "innerProgramVK");
-            assert_eq!(vk_hex(frame.vadcop_vk()), ROOT_C_VADCOP_FINAL, "rootCVadcopFinal");
+            assert_eq!(
+                vk_hex(frame.program_vk()),
+                INNER_PROGRAM_VK,
+                "innerProgramVK"
+            );
+            assert_eq!(
+                vk_hex(frame.vadcop_vk()),
+                ROOT_C_VADCOP_FINAL,
+                "rootCVadcopFinal"
+            );
         }
         aggregator.ingest(&frame).unwrap();
     }

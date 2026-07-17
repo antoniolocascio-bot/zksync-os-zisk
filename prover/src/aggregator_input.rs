@@ -35,7 +35,10 @@ pub fn decode_frames(bytes: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
     let mut frames = Vec::new();
     let mut pos = 0usize;
     while pos < bytes.len() {
-        anyhow::ensure!(pos + 8 <= bytes.len(), "truncated length prefix at byte {pos}");
+        anyhow::ensure!(
+            pos + 8 <= bytes.len(),
+            "truncated length prefix at byte {pos}"
+        );
         let len = u64::from_le_bytes(bytes[pos..pos + 8].try_into().unwrap()) as usize;
         pos += 8;
         anyhow::ensure!(
@@ -55,10 +58,8 @@ pub fn assemble(streams: &[Vec<u8>]) -> anyhow::Result<Vec<u8>> {
     // Dry-run the guest's parsing + shared-VK validation on the host.
     let mut aggregator = agg::Aggregator::new();
     for (i, stream) in streams.iter().enumerate() {
-        let words =
-            agg::words_from_bytes(stream).map_err(|e| anyhow::anyhow!("proof {i}: {e}"))?;
-        let frame =
-            agg::ProofFrame::parse(words).map_err(|e| anyhow::anyhow!("proof {i}: {e}"))?;
+        let words = agg::words_from_bytes(stream).map_err(|e| anyhow::anyhow!("proof {i}: {e}"))?;
+        let frame = agg::ProofFrame::parse(words).map_err(|e| anyhow::anyhow!("proof {i}: {e}"))?;
         aggregator
             .ingest(&frame)
             .map_err(|e| anyhow::anyhow!("proof {i}: {e}"))?;
@@ -76,8 +77,7 @@ pub fn assemble(streams: &[Vec<u8>]) -> anyhow::Result<Vec<u8>> {
 /// non-minimal frame) or a `cargo-zisk` bincode proof file with a Vadcop
 /// body.
 pub fn load_proof_stream(path: &Path) -> anyhow::Result<Vec<u8>> {
-    let data =
-        std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+    let data = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
     if data.len() == agg::PROOF_STREAM_BYTES
         && agg::words_from_bytes(&data)
             .ok()
@@ -155,7 +155,11 @@ mod tests {
 
     #[test]
     fn assemble_roundtrip() {
-        let streams = vec![synthetic_stream(0), synthetic_stream(1), synthetic_stream(2)];
+        let streams = vec![
+            synthetic_stream(0),
+            synthetic_stream(1),
+            synthetic_stream(2),
+        ];
         let input = assemble(&streams).unwrap();
 
         let frames = decode_frames(&input).unwrap();
@@ -187,7 +191,10 @@ mod tests {
         let vk_off = agg::HEADER_WORDS * 8;
         b[vk_off] ^= 0xFF;
         let err = assemble(&[a, b]).unwrap_err().to_string();
-        assert!(err.contains("program VK mismatch"), "unexpected error: {err}");
+        assert!(
+            err.contains("program VK mismatch"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

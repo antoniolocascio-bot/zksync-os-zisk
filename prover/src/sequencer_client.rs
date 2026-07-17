@@ -13,7 +13,7 @@
 //! and sent via the Authorization header; the URL is cleaned.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use url::Url;
@@ -100,10 +100,7 @@ impl SequencerClient {
                     password.as_deref().unwrap_or("")
                 ))
             );
-            headers.insert(
-                AUTHORIZATION,
-                HeaderValue::from_str(&auth_value)?,
-            );
+            headers.insert(AUTHORIZATION, HeaderValue::from_str(&auth_value)?);
             // Strip credentials from URL for logging
             url.set_username("").ok();
             url.set_password(None).ok();
@@ -265,7 +262,9 @@ impl SequencerClient {
 
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            anyhow::bail!("ZiSK aggregation submit failed for range {from_batch}..{to_batch}: {body}");
+            anyhow::bail!(
+                "ZiSK aggregation submit failed for range {from_batch}..{to_batch}: {body}"
+            );
         }
 
         Ok(())

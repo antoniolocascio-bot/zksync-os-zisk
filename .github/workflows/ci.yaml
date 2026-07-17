@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  ZKSYNC_USE_CUDA_STUBS: "1"
+
+# The lib/, guest/ and guest-aggregator/ sources are byte-frozen inputs of
+# the reproducible guest builds: the recorded ELF hashes and the programVKs
+# pinned on L1 derive from those exact bytes. Formatting and lint fixes in
+# those trees land together with an intentional VK rotation; until then CI
+# checks them with the known lint set allowed. The prover crate is not part
+# of any guest ELF and is held to the strict bar. Proving itself (GPU keys,
+# ~41 GB setup) and the full EEST corpus run outside CI.
+jobs:
+  prover:
+    name: prover (fmt, clippy, tests, deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: prover
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo fmt --check
+        working-directory: prover
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: prover
+      - run: cargo test
+        working-directory: prover
+      - run: cargo deny --log-level error check --config ../deny.toml licenses advisories sources
+        working-directory: prover
+
+  lib:
+    name: lib (clippy, tests, deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: lib
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: >
+          cargo clippy --all-targets -- -D warnings
+          -A unexpected_cfgs
+          -A clippy::doc_lazy_continuation
+          -A clippy::manual_div_ceil
+          -A clippy::manual_is_multiple_of
+          -A clippy::manual_repeat_n
+          -A clippy::needless_borrow
+          -A clippy::needless_range_loop
+          -A clippy::type_complexity
+          -A clippy::unnecessary_sort_by
+        working-directory: lib
+      - run: cargo test
+        working-directory: lib
+      - run: cargo deny --log-level error check --config ../deny.toml licenses advisories sources
+        working-directory: lib
+
+  guest-aggregator:
+    name: guest-aggregator (clippy, tests, deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: guest-aggregator
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - run: cargo clippy --all-targets -- -D warnings -A unexpected_cfgs
+        working-directory: guest-aggregator
+      - run: cargo test
+        working-directory: guest-aggregator
+      - run: cargo deny --log-level error check --config ../deny.toml licenses advisories sources
+        working-directory: guest-aggregator
+
+  guest-elf-integrity:
+    name: guest ELF matches recorded hash
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: committed ELF matches guest/GUEST_ELF_SHA256
+        run: |
+          expected="$(tr -d '[:space:]' < guest/GUEST_ELF_SHA256)"
+          actual="$(sha256sum out/zksync-os-zisk-guest | cut -d' ' -f1)"
+          echo "expected: $expected"
+          echo "actual:   $actual"
+          test "$expected" = "$actual"

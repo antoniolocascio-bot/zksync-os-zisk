@@ -103,8 +103,10 @@ impl ZiskProver {
     async fn program_setup(&self, elf: &Path, cancel: &CancellationToken) -> anyhow::Result<bool> {
         let mut args = vec![
             "program-setup".to_string(),
-            "-e".into(), p(elf),
-            "-k".into(), p(&self.proving_key),
+            "-e".into(),
+            p(elf),
+            "-k".into(),
+            p(&self.proving_key),
         ];
         if self.gpu {
             args.push("-g".into());
@@ -113,8 +115,13 @@ impl ZiskProver {
         let start = Instant::now();
         let done = run_cancellable(&self.binary, &args, cancel).await?;
         if done {
-            ZISK_PROVER_METRICS.program_setup_time.observe(start.elapsed());
-            tracing::info!(elapsed_secs = start.elapsed().as_secs(), "program-setup complete");
+            ZISK_PROVER_METRICS
+                .program_setup_time
+                .observe(start.elapsed());
+            tracing::info!(
+                elapsed_secs = start.elapsed().as_secs(),
+                "program-setup complete"
+            );
         }
         Ok(done)
     }
@@ -233,8 +240,13 @@ impl ZiskProver {
         }
         .await;
 
-        self.finish_run(&format!("range {from_batch}..{to_batch}"), &work_dir, start, result)
-            .await
+        self.finish_run(
+            &format!("range {from_batch}..{to_batch}"),
+            &work_dir,
+            start,
+            result,
+        )
+        .await
     }
 
     /// Shared `cargo-zisk prove` invocation (`-y` verifies the vadcop-final
@@ -250,9 +262,12 @@ impl ZiskProver {
     ) -> anyhow::Result<bool> {
         let mut args = vec![
             "prove".to_string(),
-            "-e".into(), p(elf),
-            "-i".into(), p(input_path),
-            "-k".into(), p(&self.proving_key),
+            "-e".into(),
+            p(elf),
+            "-i".into(),
+            p(input_path),
+            "-k".into(),
+            p(&self.proving_key),
         ];
         if plonk {
             args.push("-w".into());
@@ -275,7 +290,9 @@ impl ZiskProver {
         if !run_cancellable(&self.binary, &args, cancel).await? {
             return Ok(false);
         }
-        ZISK_PROVER_METRICS.prove_time.observe(prove_start.elapsed());
+        ZISK_PROVER_METRICS
+            .prove_time
+            .observe(prove_start.elapsed());
         anyhow::ensure!(proof_path.exists(), "proof file not generated");
         Ok(true)
     }
@@ -388,8 +405,15 @@ struct ZiskProofFile {
 #[derive(serde::Deserialize)]
 enum ZiskProofBody {
     #[allow(dead_code)]
-    Vadcop { proof: Vec<u64>, zisk_vk: Vec<u64>, minimal: bool },
-    Plonk { proof_bytes: Vec<u8>, plonk_vk: Box<ZiskPlonkVkBlob> },
+    Vadcop {
+        proof: Vec<u64>,
+        zisk_vk: Vec<u64>,
+        minimal: bool,
+    },
+    Plonk {
+        proof_bytes: Vec<u8>,
+        plonk_vk: Box<ZiskPlonkVkBlob>,
+    },
 }
 
 #[cfg_attr(test, derive(serde::Serialize))]
@@ -455,7 +479,11 @@ pub fn parse_proof_file(path: &Path) -> anyhow::Result<ZiskSnarkOutput> {
         data.len()
     );
 
-    let ZiskProofBody::Plonk { proof_bytes, plonk_vk } = proof_file.body else {
+    let ZiskProofBody::Plonk {
+        proof_bytes,
+        plonk_vk,
+    } = proof_file.body
+    else {
         anyhow::bail!("proof file contains a Vadcop proof, expected Plonk (missing --plonk?)");
     };
     anyhow::ensure!(
@@ -489,7 +517,10 @@ pub fn parse_proof_file(path: &Path) -> anyhow::Result<ZiskSnarkOutput> {
         proof_file.publics.data.len()
     );
 
-    Ok(ZiskSnarkOutput { proof: proof_bytes, public_values })
+    Ok(ZiskSnarkOutput {
+        proof: proof_bytes,
+        public_values,
+    })
 }
 
 /// Extract the serialized `vadcop_final` proof stream — the exact byte
@@ -513,7 +544,12 @@ pub fn vadcop_stream_from_proof_file(path: &Path) -> anyhow::Result<Vec<u8>> {
         data.len()
     );
 
-    let ZiskProofBody::Vadcop { proof, zisk_vk, minimal } = proof_file.body else {
+    let ZiskProofBody::Vadcop {
+        proof,
+        zisk_vk,
+        minimal,
+    } = proof_file.body
+    else {
         anyhow::bail!(
             "proof file contains a Plonk proof, expected a vadcop_final body \
              (run cargo-zisk prove WITHOUT --plonk to keep the vadcop_final proof)"
@@ -613,8 +649,12 @@ mod tests {
                     plonk_vkey: sample_vkey(),
                 }),
             },
-            publics: ZiskPublicValues { data: publics_data.clone() },
-            program_vk: ZiskProgramVk { vk: program_vk.clone() },
+            publics: ZiskPublicValues {
+                data: publics_data.clone(),
+            },
+            program_vk: ZiskProgramVk {
+                vk: program_vk.clone(),
+            },
         };
 
         let bytes = bincode::serde::encode_to_vec(&proof, bincode::config::standard()).unwrap();
@@ -629,9 +669,15 @@ mod tests {
         assert_eq!(out.proof, vec![7u8; ZISK_SNARK_PROOF_BYTES]);
         assert_eq!(out.public_values.len(), ZISK_PUBLIC_VALUES_BYTES);
         // program VK words big-endian first, then publics data, then vadcop VK.
-        assert_eq!(&out.public_values[..8], 0x1111_2222_3333_4444u64.to_be_bytes().as_slice());
+        assert_eq!(
+            &out.public_values[..8],
+            0x1111_2222_3333_4444u64.to_be_bytes().as_slice()
+        );
         assert_eq!(out.public_values[32..288], publics_data[..]);
-        assert_eq!(&out.public_values[288..296], 0xaaaa_bbbb_cccc_ddddu64.to_be_bytes().as_slice());
+        assert_eq!(
+            &out.public_values[288..296],
+            0xaaaa_bbbb_cccc_ddddu64.to_be_bytes().as_slice()
+        );
     }
 
     #[test]
@@ -652,7 +698,9 @@ mod tests {
                 minimal: false,
             },
             publics: ZiskPublicValues { data: publics_data },
-            program_vk: ZiskProgramVk { vk: program_vk.clone() },
+            program_vk: ZiskProgramVk {
+                vk: program_vk.clone(),
+            },
         };
         let bytes = bincode::serde::encode_to_vec(&proof, bincode::config::standard()).unwrap();
         let dir = std::env::temp_dir().join(format!("zisk_agg_stream_{}", std::process::id()));
@@ -703,7 +751,9 @@ mod tests {
             bincode::serde::encode_to_vec(&plonk, bincode::config::standard()).unwrap(),
         )
         .unwrap();
-        let err = vadcop_stream_from_proof_file(&path).unwrap_err().to_string();
+        let err = vadcop_stream_from_proof_file(&path)
+            .unwrap_err()
+            .to_string();
         assert!(err.contains("Plonk"), "unexpected error: {err}");
 
         // Minimal vadcop body — Poseidon2-8, no precompile: refused.
@@ -722,7 +772,9 @@ mod tests {
             bincode::serde::encode_to_vec(&minimal, bincode::config::standard()).unwrap(),
         )
         .unwrap();
-        let err = vadcop_stream_from_proof_file(&path).unwrap_err().to_string();
+        let err = vadcop_stream_from_proof_file(&path)
+            .unwrap_err()
+            .to_string();
         std::fs::remove_dir_all(&dir).ok();
         assert!(err.contains("minimal"), "unexpected error: {err}");
     }
@@ -741,12 +793,17 @@ mod tests {
     #[test]
     fn parse_rejects_vadcop_body() {
         let proof = ZiskProofFile {
-            body: ZiskProofBody::Vadcop { proof: vec![1, 2, 3], zisk_vk: vec![0; 4], minimal: false },
+            body: ZiskProofBody::Vadcop {
+                proof: vec![1, 2, 3],
+                zisk_vk: vec![0; 4],
+                minimal: false,
+            },
             publics: ZiskPublicValues { data: vec![] },
             program_vk: ZiskProgramVk { vk: vec![0; 4] },
         };
         let bytes = bincode::serde::encode_to_vec(&proof, bincode::config::standard()).unwrap();
-        let dir = std::env::temp_dir().join(format!("zisk_prover_test_vadcop_{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("zisk_prover_test_vadcop_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("proof.bin");
         std::fs::write(&path, &bytes).unwrap();

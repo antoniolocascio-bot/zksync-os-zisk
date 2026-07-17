@@ -55,11 +55,16 @@ fn main() -> anyhow::Result<()> {
     let streams: Vec<Vec<u8>> = match args.synthetic {
         Some(n) => {
             anyhow::ensure!(n >= 1, "--synthetic requires N >= 1");
-            eprintln!("generating {n} synthetic proof streams (cryptographically invalid; plumbing only)");
+            eprintln!(
+                "generating {n} synthetic proof streams (cryptographically invalid; plumbing only)"
+            );
             (0..n).map(synthetic_stream).collect()
         }
         None => {
-            anyhow::ensure!(!args.proofs.is_empty(), "no proof files given (or use --synthetic N)");
+            anyhow::ensure!(
+                !args.proofs.is_empty(),
+                "no proof files given (or use --synthetic N)"
+            );
             args.proofs
                 .iter()
                 .map(|p| load_proof_stream(p))

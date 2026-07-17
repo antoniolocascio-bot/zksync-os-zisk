@@ -21,7 +21,10 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Parser, Debug)]
-#[command(name = "zksync-os-zisk-prover-service", about = "ZiSK prover for ZKsync OS")]
+#[command(
+    name = "zksync-os-zisk-prover-service",
+    about = "ZiSK prover for ZKsync OS"
+)]
 struct Args {
     /// Sequencer URL. Supports Basic Auth: http://user:pass@host:port
     #[arg(short, long)]
@@ -112,7 +115,8 @@ fn resolve_prover_id(args: &Args) -> String {
 }
 
 fn load_supported_vk_hashes(args: &Args) -> Vec<String> {
-    let mut hashes: Vec<String> = args.supported_vk_hashes
+    let mut hashes: Vec<String> = args
+        .supported_vk_hashes
         .iter()
         .map(|h| h.to_lowercase())
         .collect();
@@ -141,8 +145,7 @@ fn load_supported_vk_hashes(args: &Args) -> Vec<String> {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -300,7 +303,7 @@ async fn main() -> anyhow::Result<()> {
         // VK hash filter.
         if !supported_vks.is_empty() {
             let vk_lower = batch.vk_hash.to_lowercase();
-            if !supported_vks.iter().any(|h| *h == vk_lower) {
+            if !supported_vks.contains(&vk_lower) {
                 tracing::warn!(
                     batch = batch.batch_number,
                     vk_hash = %batch.vk_hash,
