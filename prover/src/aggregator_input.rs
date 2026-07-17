@@ -202,6 +202,19 @@ mod tests {
         assert_eq!(loaded, stream);
     }
 
+    /// A real cargo-zisk v0.18.0 vadcop_final specimen (batch 1 of the
+    /// binding-vector range) must load unchanged — the regression anchor
+    /// for the stream framing accepted by the in-guest verifier.
+    #[test]
+    fn load_accepts_the_real_vadcop_fixture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/data/real_vadcop_final_zisk_v0.18.0.bin"
+        );
+        let loaded = load_proof_stream(Path::new(path)).unwrap();
+        assert!(!loaded.is_empty());
+    }
+
     /// The committed real fixture is a PLONK-wrapped proof — NOT a
     /// vadcop_final stream. The assembler must refuse it with an error
     /// that says so (real specimens need a no-`--plonk` cargo-zisk run).
