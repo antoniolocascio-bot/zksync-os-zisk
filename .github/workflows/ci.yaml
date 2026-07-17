@@ -93,14 +93,17 @@ jobs:
         working-directory: guest-aggregator
 
   guest-elf-integrity:
-    name: guest ELF matches recorded hash
+    name: guest ELFs match recorded hashes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: committed ELF matches guest/GUEST_ELF_SHA256
+      - name: committed ELFs match the recorded reproducible-build hashes
         run: |
-          expected="$(tr -d '[:space:]' < guest/GUEST_ELF_SHA256)"
-          actual="$(sha256sum out/zksync-os-zisk-guest | cut -d' ' -f1)"
-          echo "expected: $expected"
-          echo "actual:   $actual"
-          test "$expected" = "$actual"
+          check() {
+            expected="$(tr -d '[:space:]' < "$1")"
+            actual="$(sha256sum "$2" | cut -d' ' -f1)"
+            echo "$2: expected $expected, actual $actual"
+            test "$expected" = "$actual"
+          }
+          check guest/GUEST_ELF_SHA256 out/zksync-os-zisk-guest
+          check guest-aggregator/GUEST_ELF_SHA256 out/zksync-os-zisk-guest-aggregator
