@@ -30,7 +30,7 @@ jobs:
           workspaces: prover
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.19.9
       - run: cargo fmt --check
         working-directory: prover
       - run: cargo clippy --all-targets -- -D warnings
@@ -53,7 +53,7 @@ jobs:
           workspaces: lib
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.19.9
       - run: >
           cargo clippy --all-targets -- -D warnings
           -A unexpected_cfgs
@@ -84,7 +84,7 @@ jobs:
           workspaces: guest-aggregator
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.19.9
       - run: cargo clippy --all-targets -- -D warnings -A unexpected_cfgs
         working-directory: guest-aggregator
       - run: cargo test
