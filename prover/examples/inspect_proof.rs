@@ -1,5 +1,8 @@
 //! Inspect a real `cargo-zisk prove --plonk` proof file: parse it with the
-//! daemon's mirrored structs and dump the assembled wire sections.
+//! daemon's mirrored structs, dump the assembled wire sections, and print
+//! the full PROOF / PUBLIC_VALUES hex — the constants the era-contracts
+//! real-proof fixture test pins, so VK bumps re-derive them from a fresh
+//! proof in one command.
 //!
 //! Usage: cargo run --example inspect_proof -- <proof.bin>
 
@@ -23,6 +26,12 @@ fn main() {
     );
     let n = out.public_values.len();
     println!("vadcop_vk    = 0x{}", hex(&out.public_values[n - 32..]));
+    println!("PROOF({}): {}", out.proof.len(), hex(&out.proof));
+    println!(
+        "PUBLIC_VALUES({}): {}",
+        out.public_values.len(),
+        hex(&out.public_values)
+    );
 }
 
 fn hex(b: &[u8]) -> String {
