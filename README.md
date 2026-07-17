@@ -4,6 +4,10 @@ A second proof system for ZKsync OS using ZiSK (RV64IMA zkVM). Runs alongside
 the primary airbender (RV32I) proof system, providing independent verification
 of state transitions.
 
+> **Start here for the cross-repo picture:** [docs/multiprover.md](docs/multiprover.md)
+> covers the full multi-proof lane — proof flow, key pinning, operating
+> modes — and maps which repository owns which component.
+
 ## Architecture
 
 ```
