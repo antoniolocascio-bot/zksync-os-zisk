@@ -10,7 +10,7 @@
 //! native reference values.
 //!
 //! Usage:
-//!   cargo run --example dump_to_batchinput -- <dump.json> <out_dir> [--no-validate]
+//!   cargo run --bin dump_to_batchinput -- <dump.json> <out_dir> [--no-validate]
 //!
 //! Outputs:
 //!   <out_dir>/batch_input.bin — bincode 1.x fixint `BatchInput` (server format)

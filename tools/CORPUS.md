@@ -18,7 +18,7 @@ waivers remain. Any other outcome is a regression or a new finding.
 EEST fixtures ──▶ evm_tester (zksync-os with the state-dump hook,
                   ZKOS_STATE_DUMP_DIR set, production-semantics build)
                   ──▶ one JSON bundle per executed block
-bundle ──▶ dump_to_batchinput (lib/examples/, this repo)
+bundle ──▶ dump_to_batchinput (lib/src/bin/, this repo)
            ──▶ BatchInput bincode + framed input.bin, validated vs native
 input.bin ──▶ ziskemu + guest ELF ──▶ clean exit or attributed panic
 ```

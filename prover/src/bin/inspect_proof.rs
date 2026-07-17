@@ -4,7 +4,7 @@
 //! real-proof fixture test pins, so VK bumps re-derive them from a fresh
 //! proof in one command.
 //!
-//! Usage: cargo run --example inspect_proof -- <proof.bin>
+//! Usage: cargo run --bin inspect_proof -- <proof.bin>
 
 fn main() {
     let path = std::env::args()

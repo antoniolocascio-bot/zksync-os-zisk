@@ -3,7 +3,7 @@
 //! quick way to check what the guest computes for a specific batch when
 //! debugging a proof-lane divergence.
 //!
-//! Usage: cargo run --example run_batch_input -- <batch_input.bin>
+//! Usage: cargo run --bin run_batch_input -- <batch_input.bin>
 
 use zksync_os_zisk_lib::executor;
 use zksync_os_zisk_lib::types::BatchInput;

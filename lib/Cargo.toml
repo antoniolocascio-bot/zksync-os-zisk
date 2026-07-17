@@ -19,11 +19,6 @@ tiny-keccak = { version = "2.0", features = ["keccak"] }
 [dev-dependencies]
 serde_json = "1"
 
-# test = true so the smoke tests inside the example run under `cargo test`.
-[[example]]
-name = "dump_to_batchinput"
-test = true
-
 [features]
 default = ["c-libs"]
 # Enable C-based crypto (secp256k1, blst, c-kzg) — for native builds

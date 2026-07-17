@@ -58,8 +58,8 @@ mkdir -p "$CORPUS_OUT/chunks"
 echo "=== building evm-tester and dump_to_batchinput ==="
 (cd "$ZKOS_DUMP_WORKTREE/tests/evm_tester" && cargo build --release --bin evm-tester) || exit 1
 EVM_TESTER="$CARGO_TARGET_DIR/release/evm-tester"
-(cd "$ZISK_LIB_DIR" && cargo build --release --example dump_to_batchinput) || exit 1
-READER="$CARGO_TARGET_DIR/release/examples/dump_to_batchinput"
+(cd "$ZISK_LIB_DIR" && cargo build --release --bin dump_to_batchinput) || exit 1
+READER="$CARGO_TARGET_DIR/release/dump_to_batchinput"
 [ -x "$EVM_TESTER" ] && [ -x "$READER" ] || { echo "missing built binaries"; exit 1; }
 # Snapshot the binaries: later cargo invocations elsewhere must not swap them.
 mkdir -p "$CORPUS_OUT/bin"
