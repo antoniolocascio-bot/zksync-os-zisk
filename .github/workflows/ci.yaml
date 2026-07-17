@@ -92,6 +92,29 @@ jobs:
       - run: cargo deny --log-level error check --config ../deny.toml licenses advisories sources
         working-directory: guest-aggregator
 
+  test-utils:
+    name: test-utils (fmt, clippy, tests, deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/test-utils
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.19.9
+      - run: cargo fmt --check
+        working-directory: tools/test-utils
+      - run: cargo clippy --all-targets -- -D warnings -A unexpected_cfgs
+        working-directory: tools/test-utils
+      - run: cargo test
+        working-directory: tools/test-utils
+      - run: cargo deny --log-level error check --config ../../deny.toml licenses advisories sources
+        working-directory: tools/test-utils
+
   guest-elf-integrity:
     name: guest ELFs match recorded hashes
     runs-on: ubuntu-latest

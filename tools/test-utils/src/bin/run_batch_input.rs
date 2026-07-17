@@ -23,7 +23,11 @@ fn main() {
         input.chain_id,
         input.blocks.first().map(|b| b.number).unwrap_or(0),
         input.blocks.last().map(|b| b.number).unwrap_or(0),
-        input.blocks.iter().map(|b| b.transactions.len()).sum::<usize>(),
+        input
+            .blocks
+            .iter()
+            .map(|b| b.transactions.len())
+            .sum::<usize>(),
     );
 
     let (_output, commitment, state_before, state_after, batch_hash) =

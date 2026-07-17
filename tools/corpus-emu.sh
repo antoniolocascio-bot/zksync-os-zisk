@@ -22,7 +22,7 @@
 # Environment (defaults for this workstation):
 #   ZKOS_DUMP_WORKTREE  zksync-os checkout with the dump hook
 #   ZKOS_FIXTURES       ethereum-fixtures dir (for --all enumeration)
-#   ZISK_LIB_DIR        zksync-os-zisk/lib (dump_to_batchinput example)
+#   ZISK_TESTUTILS_DIR  zksync-os-zisk/tools/test-utils (dump_to_batchinput)
 #   ZISK_GUEST_ELF      guest ELF to emulate
 #   ZISKEMU             ziskemu binary
 #   CORPUS_OUT          work/output directory
@@ -32,7 +32,7 @@ set -uo pipefail
 
 ZKOS_DUMP_WORKTREE="${ZKOS_DUMP_WORKTREE:-$HOME/multiprover/zksync-os-dump-v030}"
 ZKOS_FIXTURES="${ZKOS_FIXTURES:-$HOME/zksync-os/tests/evm_tester/ethereum-fixtures}"
-ZISK_LIB_DIR="${ZISK_LIB_DIR:-$HOME/multiprover/zksync-os-zisk/lib}"
+ZISK_TESTUTILS_DIR="${ZISK_TESTUTILS_DIR:-$HOME/multiprover/zksync-os-zisk/tools/test-utils}"
 ZISK_GUEST_ELF="${ZISK_GUEST_ELF:-$HOME/multiprover/zksync-os-zisk/out/zksync-os-zisk-guest}"
 ZISKEMU="${ZISKEMU:-$HOME/.zisk-0.18.0/bin/ziskemu}"
 CORPUS_OUT="${CORPUS_OUT:-$HOME/multiprover/corpus-emu-out}"
@@ -58,7 +58,7 @@ mkdir -p "$CORPUS_OUT/chunks"
 echo "=== building evm-tester and dump_to_batchinput ==="
 (cd "$ZKOS_DUMP_WORKTREE/tests/evm_tester" && cargo build --release --bin evm-tester) || exit 1
 EVM_TESTER="$CARGO_TARGET_DIR/release/evm-tester"
-(cd "$ZISK_LIB_DIR" && cargo build --release --bin dump_to_batchinput) || exit 1
+(cd "$ZISK_TESTUTILS_DIR" && cargo build --release --bin dump_to_batchinput) || exit 1
 READER="$CARGO_TARGET_DIR/release/dump_to_batchinput"
 [ -x "$EVM_TESTER" ] && [ -x "$READER" ] || { echo "missing built binaries"; exit 1; }
 # Snapshot the binaries: later cargo invocations elsewhere must not swap them.

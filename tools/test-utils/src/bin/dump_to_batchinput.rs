@@ -29,9 +29,9 @@ use zksync_os_revm::ZkSpecId;
 use zksync_os_zisk_lib::executor;
 use zksync_os_zisk_lib::hash::keccak256;
 use zksync_os_zisk_lib::merkle::{
-    blake2s, derive_account_properties_key, derive_flat_storage_key, empty_subtree_hash,
-    hash_leaf, AccountProperties, BatchTreeUpdate, NeighborProofEntry, SlotProofEntry,
-    StorageProof, TreeLeaf, WriteOp, TREE_DEPTH,
+    blake2s, derive_account_properties_key, derive_flat_storage_key, empty_subtree_hash, hash_leaf,
+    AccountProperties, BatchTreeUpdate, NeighborProofEntry, SlotProofEntry, StorageProof, TreeLeaf,
+    WriteOp, TREE_DEPTH,
 };
 use zksync_os_zisk_lib::types::*;
 
@@ -175,7 +175,11 @@ fn build_levels(leaf_hashes: Vec<B256>) -> Vec<Vec<B256>> {
         let mut j = 0;
         while j < cur.len() {
             let l = cur[j];
-            let r = if j + 1 < cur.len() { cur[j + 1] } else { empty_subtree_hash(d as u8) };
+            let r = if j + 1 < cur.len() {
+                cur[j + 1]
+            } else {
+                empty_subtree_hash(d as u8)
+            };
             next.push(node_hash(&l, &r));
             j += 2;
         }
@@ -197,7 +201,10 @@ fn siblings_for(levels: &[Vec<B256>], i: u64) -> Vec<B256> {
     for d in 0..(TREE_DEPTH as usize) {
         let pos = ((i >> d) ^ 1) as usize;
         let s = if d < levels.len() {
-            levels[d].get(pos).copied().unwrap_or(empty_subtree_hash(d as u8))
+            levels[d]
+                .get(pos)
+                .copied()
+                .unwrap_or(empty_subtree_hash(d as u8))
         } else {
             empty_subtree_hash(d as u8)
         };
@@ -240,7 +247,9 @@ impl revm::DatabaseRef for RecordingDb {
         match self.storage.get(&fk) {
             Some(hash) if !hash.is_zero() => {
                 let preimage = self.preimages.get(hash).ok_or_else(|| {
-                    RecErr(format!("no preimage for account {address} props hash {hash}"))
+                    RecErr(format!(
+                        "no preimage for account {address} props hash {hash}"
+                    ))
                 })?;
                 let props = AccountProperties::decode(preimage);
                 let code_hash = if props.observable_bytecode_hash.is_zero() {
@@ -274,14 +283,22 @@ impl revm::DatabaseRef for RecordingDb {
         self.code
             .get(&code_hash)
             .map(|c| revm::state::Bytecode::new_raw(revm::primitives::Bytes::copy_from_slice(c)))
-            .ok_or_else(|| RecErr(format!("no bytecode for code_hash {code_hash} in dump preimages")))
+            .ok_or_else(|| {
+                RecErr(format!(
+                    "no bytecode for code_hash {code_hash} in dump preimages"
+                ))
+            })
     }
 
     fn storage_ref(&self, address: Address, index: U256) -> Result<U256, RecErr> {
         let slot = B256::from(index.to_be_bytes::<32>());
         let fk = derive_flat_storage_key(&address.into_array(), &slot);
         self.read_slots.borrow_mut().insert(fk);
-        Ok(self.storage.get(&fk).map(|v| U256::from_be_bytes(v.0)).unwrap_or_default())
+        Ok(self
+            .storage
+            .get(&fk)
+            .map(|v| U256::from_be_bytes(v.0))
+            .unwrap_or_default())
     }
 
     fn block_hash_ref(&self, number: u64) -> Result<B256, RecErr> {
@@ -320,8 +337,7 @@ fn tracking_run(
 
     for (tx_idx, tx_input) in block.transactions.iter().enumerate() {
         evm.0.ctx.chain.set_tx_number(tx_idx as u16);
-        let (tx, _tx_hash, _tx_type) =
-            executor::tx::build_proven_tx(tx_input, block.gas_limit);
+        let (tx, _tx_hash, _tx_type) = executor::tx::build_proven_tx(tx_input, block.gas_limit);
         match evm.transact_commit(tx) {
             Ok(_result) => {
                 let _ = evm.0.ctx.chain.take_logs();
@@ -351,7 +367,9 @@ fn derive_codes(preimages: &HashMap<B256, Vec<u8>>) -> BTreeMap<B256, Vec<u8>> {
         if obs.is_zero() || obs == KECCAK_EMPTY || codes.contains_key(&obs) {
             continue;
         }
-        let Some(code_blob) = preimages.get(&props.bytecode_hash) else { continue };
+        let Some(code_blob) = preimages.get(&props.bytecode_hash) else {
+            continue;
+        };
         let len = props.unpadded_code_len as usize;
         if code_blob.len() < len {
             continue;
@@ -375,7 +393,7 @@ fn build_storage_proofs(
         .map(|(idx, k, v, n)| (*k, (*idx, *v, *n)))
         .collect();
     let mut by_key: Vec<&(u64, B256, B256, u64)> = pre_by_index.iter().collect();
-    by_key.sort_by(|a, b| a.1.cmp(&b.1));
+    by_key.sort_by_key(|entry| entry.1);
 
     let entry_for = |idx: u64, val: B256, next: u64| SlotProofEntry {
         index: idx,
@@ -430,7 +448,11 @@ fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
     for p in d.pre.preimages.iter().chain(d.post.preimages.iter()) {
         let h = hb256(&p.hash);
         let b = hbytes(&p.bytes);
-        assert_eq!(blake2s(&b), h, "preimage bytes do not hash to their key {h}");
+        assert_eq!(
+            blake2s(&b),
+            h,
+            "preimage bytes do not hash to their key {h}"
+        );
         preimages.insert(h, b);
     }
     let codes = derive_codes(&preimages);
@@ -443,17 +465,31 @@ fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
         .map(|l| (l.index, hb256(&l.key), hb256(&l.value), l.next))
         .collect();
     pre_by_index.sort_by_key(|e| e.0);
-    assert_eq!(pre_by_index.len() as u64, d.leaf_count_before, "dense leaf count");
+    assert_eq!(
+        pre_by_index.len() as u64,
+        d.leaf_count_before,
+        "dense leaf count"
+    );
     for (i, e) in pre_by_index.iter().enumerate() {
         assert_eq!(e.0, i as u64, "pre-state tree must be dense from index 0");
     }
 
-    let leaf_hashes: Vec<B256> =
-        pre_by_index.iter().map(|(_, k, v, n)| hash_leaf(k, v, *n)).collect();
+    let leaf_hashes: Vec<B256> = pre_by_index
+        .iter()
+        .map(|(_, k, v, n)| hash_leaf(k, v, *n))
+        .collect();
     let levels = build_levels(leaf_hashes);
     let root_before = hb256(&d.tree_root_before);
-    assert_eq!(hb256(&d.pre.root), root_before, "pre.root != tree_root_before");
-    assert_eq!(dense_root(&levels), root_before, "dense pre-state root != tree_root_before");
+    assert_eq!(
+        hb256(&d.pre.root),
+        root_before,
+        "pre.root != tree_root_before"
+    );
+    assert_eq!(
+        dense_root(&levels),
+        root_before,
+        "dense pre-state root != tree_root_before"
+    );
 
     // BLOCKHASH ring: previous_block_hashes[j] = hash of block (N - len + j).
     let ring: Vec<B256> = d.previous_block_hashes.iter().map(|s| hb256(s)).collect();
@@ -504,7 +540,9 @@ fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
                 chain_id: Some(d.chain_id),
                 gas_used_override: Some(t.gas_used),
                 force_fail: false,
-                auth: TxAuth::L2 { signed_bytes: hbytes(&t.signed) },
+                auth: TxAuth::L2 {
+                    signed_bytes: hbytes(&t.signed),
+                },
             })
             .collect(),
         account_preimages: vec![],
@@ -610,10 +648,16 @@ fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
     // post-state: a later insert can land between a leaf and its predecessor,
     // so the post-state `next` pointers are not usable. Simulate the evolving
     // linked list instead (mirrors the server's build_tree_update).
-    let mut list_key_to_index: BTreeMap<B256, u64> =
-        pre_by_index.iter().map(|(idx, k, _, _)| (*k, *idx)).collect();
+    let mut list_key_to_index: BTreeMap<B256, u64> = pre_by_index
+        .iter()
+        .map(|(idx, k, _, _)| (*k, *idx))
+        .collect();
     for (i, (post_idx, k, v)) in inserts.iter().enumerate() {
-        assert_eq!(*post_idx, d.leaf_count_before + i as u64, "inserts not dense");
+        assert_eq!(
+            *post_idx,
+            d.leaf_count_before + i as u64,
+            "inserts not dense"
+        );
         let prev_index = *list_key_to_index
             .range(..*k)
             .next_back()
@@ -623,7 +667,11 @@ fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
         entries.push((*k, *v));
         list_key_to_index.insert(*k, *post_idx);
     }
-    println!("tree_update: {} updates, {} inserts", updates.len(), inserts.len());
+    println!(
+        "tree_update: {} updates, {} inserts",
+        updates.len(),
+        inserts.len()
+    );
 
     // The dump carries the entire pre-state, so every leaf goes into the
     // witness. Pass 1 of the trust-free tree update then authenticates the
@@ -631,7 +679,16 @@ fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
     // dedicated anchor leaves (or intermediate hashes) are needed.
     let sorted_leaves: Vec<(u64, TreeLeaf)> = pre_by_index
         .iter()
-        .map(|(idx, k, v, n)| (*idx, TreeLeaf { key: *k, value: *v, next_index: *n }))
+        .map(|(idx, k, v, n)| {
+            (
+                *idx,
+                TreeLeaf {
+                    key: *k,
+                    value: *v,
+                    next_index: *n,
+                },
+            )
+        })
         .collect();
     let tree_update = BatchTreeUpdate {
         operations,
@@ -685,7 +742,11 @@ fn build_batch_input(d: &DDump, no_header_check: bool) -> BatchInput {
         chain_id: d.chain_id,
         spec_id: d.spec_id,
         protocol_version_minor: d.protocol_version_minor,
-        blocks: vec![BlockInput { account_preimages, storage_proofs, ..block_env }],
+        blocks: vec![BlockInput {
+            account_preimages,
+            storage_proofs,
+            ..block_env
+        }],
         batch_meta,
         bytecodes: codes.into_iter().collect(),
     }
@@ -738,17 +799,31 @@ fn validate(d: &DDump, bi: &BatchInput) -> bool {
             // the forward path); state commitments + header hash + pubdata
             // remain the native ground truth there.
             if d.native_batch_output_hash.is_empty() {
-                println!("SKIP batch_output_hash/chain_config_hash/batch_public_input: not in bundle");
+                println!(
+                    "SKIP batch_output_hash/chain_config_hash/batch_public_input: not in bundle"
+                );
                 let _ = (pi, bh);
             } else {
-                ok &= check("batch_output_hash", &bh, &hb256(&d.native_batch_output_hash));
+                ok &= check(
+                    "batch_output_hash",
+                    &bh,
+                    &hb256(&d.native_batch_output_hash),
+                );
                 let ccfg = zksync_os_zisk_lib::commitment::chain_config_hash(
                     d.chain_id,
                     d.chain_config_fri,
                     d.chain_config_max_tx_gas_limit,
                 );
-                ok &= check("chain_config_hash", &ccfg, &hb256(&d.native_chain_config_hash));
-                ok &= check("batch_public_input", &pi, &hb256(&d.native_batch_public_input));
+                ok &= check(
+                    "chain_config_hash",
+                    &ccfg,
+                    &hb256(&d.native_chain_config_hash),
+                );
+                ok &= check(
+                    "batch_public_input",
+                    &pi,
+                    &hb256(&d.native_batch_public_input),
+                );
             }
         }
         Err(_) => {
@@ -764,7 +839,7 @@ fn frame_for_zisk(bincode_bytes: &[u8]) -> Vec<u8> {
     framed.extend_from_slice(&(bincode_bytes.len() as u64).to_le_bytes());
     framed.extend_from_slice(bincode_bytes);
     let pad = (8 - (framed.len() % 8)) % 8;
-    framed.extend(std::iter::repeat(0u8).take(pad));
+    framed.extend(std::iter::repeat_n(0u8, pad));
     framed
 }
 
@@ -781,12 +856,12 @@ fn main() {
             pos.push(a);
         }
     }
-    let [dump_path, out_dir]: [String; 2] = pos
-        .try_into()
-        .unwrap_or_else(|_| panic!("usage: dump_to_batchinput <dump.json> <out_dir> [--no-validate]"));
+    let [dump_path, out_dir]: [String; 2] = pos.try_into().unwrap_or_else(|_| {
+        panic!("usage: dump_to_batchinput <dump.json> <out_dir> [--no-validate]")
+    });
 
-    let raw = std::fs::read_to_string(&dump_path)
-        .unwrap_or_else(|e| panic!("read {dump_path}: {e}"));
+    let raw =
+        std::fs::read_to_string(&dump_path).unwrap_or_else(|e| panic!("read {dump_path}: {e}"));
     let d: DDump = serde_json::from_str(&raw).expect("parse dump json");
     println!(
         "dump: chain_id={} spec_id={} protocol_minor={} block={} txs={} pre_leaves={} post_leaves={}",
@@ -902,7 +977,10 @@ mod tests {
         let hex = |b: &[u8]| alloy_primitives::hex::encode(b);
 
         // Guard-only tree: MIN(0)->MAX(1), count 2.
-        let leaves = [(B256::ZERO, B256::ZERO, 1u64), (B256::repeat_byte(0xff), B256::ZERO, 1u64)];
+        let leaves = [
+            (B256::ZERO, B256::ZERO, 1u64),
+            (B256::repeat_byte(0xff), B256::ZERO, 1u64),
+        ];
         let hashes: Vec<B256> = leaves.iter().map(|(k, v, n)| hash_leaf(k, v, *n)).collect();
         let root = dense_root(&build_levels(hashes));
 
@@ -928,10 +1006,8 @@ mod tests {
             &commitment::block_hashes_blake(&[], &header_hash),
             42,
         );
-        let l2_logs_root = commitment::keccak_two(
-            &commitment::l2_to_l1_logs_root(&[]),
-            &B256::ZERO,
-        );
+        let l2_logs_root =
+            commitment::keccak_two(&commitment::l2_to_l1_logs_root(&[]), &B256::ZERO);
         let bo = commitment::batch_output_hash_native(
             true, // v31 layout
             37,
@@ -991,7 +1067,10 @@ mod tests {
         let d: DDump = serde_json::from_str(&json).expect("parse");
         let bi = build_batch_input(&d, false);
         assert_eq!(bi.version, BATCH_INPUT_VERSION);
-        assert!(validate(&d, &bi), "self-consistent bundle must pass all checks");
+        assert!(
+            validate(&d, &bi),
+            "self-consistent bundle must pass all checks"
+        );
     }
 
     /// The dense-tree builders must agree with the lib's proof verifier:
@@ -1031,8 +1110,14 @@ mod tests {
             siblings: siblings_for(&levels, 1),
         };
         let proof = StorageProof::NonExisting {
-            left_neighbor: NeighborProofEntry { entry: left, leaf_key: data_key },
-            right_neighbor: NeighborProofEntry { entry: right, leaf_key: B256::repeat_byte(0xff) },
+            left_neighbor: NeighborProofEntry {
+                entry: left,
+                leaf_key: data_key,
+            },
+            right_neighbor: NeighborProofEntry {
+                entry: right,
+                leaf_key: B256::repeat_byte(0xff),
+            },
         };
         let (recovered, value) = proof.verify(&missing).expect("verify");
         assert_eq!(recovered, root);

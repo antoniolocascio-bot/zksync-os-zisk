@@ -9,3 +9,4 @@
 lib/target/
 lib/Cargo.lock
 guest/build/
+**/target/
