@@ -106,8 +106,25 @@ impl DatabaseRef for ProvenDB {
 /// All merkle proofs from all blocks are verified at construction time and
 /// their values are stored in flat maps. Each block's proofs are verified
 /// against that block's expected tree root.
-pub(super) fn build_proven_db(input: &BatchInput) -> ProvenDB {
-    let meta = &input.batch_meta;
+///
+/// MEMORY-REUSE PROTOTYPE (proto/guest-memory-reuse): this takes `&mut input`
+/// and *consumes* the two read-only witness terms that are dead the moment
+/// verification finishes — `blocks[].storage_proofs` (the merkle siblings) and
+/// the raw `bytecodes` blob — instead of borrowing them for the whole batch:
+///   * Each block's `storage_proofs` Vec is moved out with `mem::take` and the
+///     proofs are consumed by value; every `StorageProof`'s `siblings` Vec is
+///     dropped as soon as `proof.verify` recovers the root, so the ~32·depth
+///     sibling bytes per slot never survive past this function. Only the
+///     verified value (`Option<B256>`, ~40 B) is retained in `verified_storage`.
+///   * The raw `bytecodes: Vec<(B256, Vec<u8>)>` is moved out and each code Vec
+///     is handed to `Bytes::from` (zero-copy move) rather than
+///     `Bytes::copy_from_slice` (a second copy). The raw Vec is freed here, so
+///     bytecode is materialized once (the per-account `.cloned()` below is an
+///     Arc/refcount bump on that single buffer, not a deep copy).
+/// After this returns, the caller's `BatchInput` holds empty `storage_proofs`
+/// Vecs and an empty `bytecodes` Vec — the siblings are gone before the block
+/// execution loop begins.
+pub(super) fn build_proven_db(input: &mut BatchInput) -> ProvenDB {
     let mut verified_storage: HashMap<B256, Option<B256>> = HashMap::new();
     let mut verified_accounts: HashMap<Address, Option<AccountInfo>> = HashMap::new();
     let mut bytecodes: HashMap<B256, Bytecode> = HashMap::new();
@@ -115,38 +132,50 @@ pub(super) fn build_proven_db(input: &BatchInput) -> ProvenDB {
 
     // Load batch-level bytecodes. All are keyed by keccak256(code).
     // The server converts blake2s-keyed force-deploy bytecodes to keccak256
-    // at witness-building time.
-    for (hash, code) in &input.bytecodes {
-        let computed = crate::hash::keccak256(code);
+    // at witness-building time. Move the raw blob out and consume it so the
+    // duplicate copy does not stay resident.
+    let bytecodes_raw = std::mem::take(&mut input.bytecodes);
+    for (hash, code) in bytecodes_raw {
+        let computed = crate::hash::keccak256(&code);
         assert_eq!(
-            computed, *hash,
+            computed, hash,
             "bytecode hash mismatch: key={hash}, keccak256={computed}, len={}", code.len()
         );
-        bytecodes.insert(*hash, Bytecode::new_raw(Bytes::copy_from_slice(code)));
+        bytecodes.insert(hash, Bytecode::new_raw(Bytes::from(code)));
     }
 
-    for block in &input.blocks {
+    // Capture the small batch-scoped values needed inside the mutable block
+    // loop (so we can iterate `input.blocks` mutably without aliasing
+    // `input.batch_meta`). `previous_block_hashes` is at most 255 entries.
+    let tree_root_before = input.batch_meta.tree_root_before;
+    let last_num = input.blocks.last().map(|b| b.number);
+    let previous_block_hashes = input.batch_meta.previous_block_hashes.clone();
+
+    for block in input.blocks.iter_mut() {
         let expected_root = if !block.expected_tree_root.is_zero() {
-            &block.expected_tree_root
+            block.expected_tree_root
         } else {
-            &meta.tree_root_before
+            tree_root_before
         };
 
-        // Verify all merkle proofs and extract values FROM the proofs.
-        for (key, proof) in &block.storage_proofs {
+        // Verify all merkle proofs and extract values FROM the proofs. Move the
+        // proofs Vec out and consume by value: each proof (and its siblings) is
+        // dropped right after `verify`, so the siblings never outlive this loop.
+        let storage_proofs = std::mem::take(&mut block.storage_proofs);
+        for (key, proof) in storage_proofs {
             let (root, value) = proof
-                .verify(key)
+                .verify(&key)
                 .unwrap_or_else(|e| panic!("merkle proof failed for key {key}: {e}"));
 
             assert_eq!(
-                root, *expected_root,
+                root, expected_root,
                 "proof for {key} recovers root {root}, expected {expected_root}"
             );
 
             // First block's proof wins — later blocks may have the same key
             // against a different root (after writes), but the pre-state value
             // is what matters for the ProvenDB. Intra-batch updates go through CacheDB.
-            verified_storage.entry(*key).or_insert(value);
+            verified_storage.entry(key).or_insert(value);
         }
 
         // Build verified accounts from account_preimages.
@@ -204,15 +233,14 @@ pub(super) fn build_proven_db(input: &BatchInput) -> ProvenDB {
         // block (last_block - 255 + j). We use the last block's number, not
         // `block_number_before` (which is first_block - 1), so multi-block
         // batches index into the ring correctly.
-        if let Some(last_block) = input.blocks.last() {
-            let last_num = last_block.number;
-            if last_num >= 255 {
+        match last_num {
+            Some(last_num) if last_num >= 255 => {
                 let oldest_available = last_num - 255;
                 for &(num, hash) in &block.block_hashes {
                     if num >= oldest_available && num < last_num {
                         let idx = (num - oldest_available) as usize;
-                        if idx < meta.previous_block_hashes.len() {
-                            let verified_hash = meta.previous_block_hashes[idx];
+                        if idx < previous_block_hashes.len() {
+                            let verified_hash = previous_block_hashes[idx];
                             if !verified_hash.is_zero() {
                                 assert_eq!(
                                     hash, verified_hash,
@@ -223,14 +251,11 @@ pub(super) fn build_proven_db(input: &BatchInput) -> ProvenDB {
                     }
                     block_hashes.insert(num, hash);
                 }
-            } else {
+            }
+            _ => {
                 for &(num, hash) in &block.block_hashes {
                     block_hashes.insert(num, hash);
                 }
-            }
-        } else {
-            for &(num, hash) in &block.block_hashes {
-                block_hashes.insert(num, hash);
             }
         }
 

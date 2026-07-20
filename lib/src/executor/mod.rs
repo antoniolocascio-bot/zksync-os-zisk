@@ -20,7 +20,20 @@ use crate::types::*;
 
 /// Execute a batch with full merkle proof verification and compute the
 /// BatchPublicInput hash matching the server/L1 format.
+///
+/// Borrowing entry point (used by tests). Clones into an owned `BatchInput`
+/// and dispatches to `execute_and_commit_owned`; the clone means this path
+/// does NOT get the memory-reuse benefit (the caller keeps its own copy), but
+/// it exercises the identical commitment logic. Memory-sensitive callers (the
+/// guest `main`, `execute_and_commit_from_bincode`) use the owned path.
 pub fn execute_and_commit(input: &BatchInput) -> (BatchOutput, B256) {
+    execute_and_commit_owned(input.clone())
+}
+
+/// Owned entry point — the memory-reuse path. Takes the `BatchInput` by value
+/// so the executor can drop the read-only witness siblings (and the raw
+/// bytecode blob) after proof verification, before the block execution loop.
+pub fn execute_and_commit_owned(input: BatchInput) -> (BatchOutput, B256) {
     let (output, commitment, _, _, _) = execute_and_commit_inner(input);
     (output, commitment)
 }
@@ -28,10 +41,10 @@ pub fn execute_and_commit(input: &BatchInput) -> (BatchOutput, B256) {
 /// Same as `execute_and_commit` but also returns the three commitment
 /// sub-components for debugging.
 pub fn execute_and_commit_debug(input: &BatchInput) -> (BatchOutput, B256, B256, B256, B256) {
-    execute_and_commit_inner(input)
+    execute_and_commit_inner(input.clone())
 }
 
-fn execute_and_commit_inner(input: &BatchInput) -> (BatchOutput, B256, B256, B256, B256) {
+fn execute_and_commit_inner(mut input: BatchInput) -> (BatchOutput, B256, B256, B256, B256) {
     assert_eq!(
         input.version,
         crate::types::BATCH_INPUT_VERSION,
@@ -46,12 +59,15 @@ fn execute_and_commit_inner(input: &BatchInput) -> (BatchOutput, B256, B256, B25
         _ => panic!("unknown spec_id: {}", input.spec_id),
     };
 
-    let meta = &input.batch_meta;
-    validate_block_sequence(input);
+    validate_block_sequence(&input);
 
-    // Execute all blocks with merkle-verified state.
-    let proven_db = proven_db::build_proven_db(input);
+    // Execute all blocks with merkle-verified state. `build_proven_db` consumes
+    // and frees the read-only witness siblings (`blocks[].storage_proofs`) and
+    // the raw `bytecodes` blob, so they do not stay resident during the block
+    // execution loop below — only the verified values survive in `ProvenDB`.
+    let proven_db = proven_db::build_proven_db(&mut input);
     let mut cache_db = CacheDB::new(proven_db);
+    let meta = &input.batch_meta;
 
     let mut block_results = Vec::with_capacity(input.blocks.len());
     let mut computed_block_hashes: HashMap<u64, B256> = HashMap::new();
@@ -301,5 +317,5 @@ pub fn execute_and_commit_from_bincode(
 ) -> Result<(BatchOutput, B256), String> {
     let batch_input: BatchInput =
         bincode::deserialize(bincode_data).map_err(|e| format!("deserialize: {e}"))?;
-    Ok(execute_and_commit(&batch_input))
+    Ok(execute_and_commit_owned(batch_input))
 }

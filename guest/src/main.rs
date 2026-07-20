@@ -38,7 +38,10 @@ fn main() {
     let batch_input: BatchInput =
         bincode::deserialize(bytes).expect("failed to deserialize BatchInput (bincode 1.x)");
 
-    let (_output, commitment) = executor::execute_and_commit(&batch_input);
+    // Owned path: hand ownership of the deserialized witness to the executor so
+    // it can free the read-only merkle siblings after proof verification instead
+    // of holding the whole blob resident for the batch (proto/guest-memory-reuse).
+    let (_output, commitment) = executor::execute_and_commit_owned(batch_input);
     let hash_bytes: [u8; 32] = commitment.into();
 
     // `commit_slice` writes the byte stream directly (no u32-LE re-chunking),
