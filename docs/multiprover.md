@@ -237,7 +237,7 @@ Current values, with ZiSK v0.18.0:
 
 ```text
 guest ELF sha256      = 80b841c76445dd3c411cc1f11447cc85285521541378821442aef1f7262da932
-guest programVK       = pending derivation on a prover box (guest/GUEST_PROGRAM_VK)
+guest programVK       = 0x44e3d132399c8f3a03ce9672ba0ca00c6503db918731c7ab46d6faea445236ec
 aggregator ELF sha256 = f96f9285ca87083f322569d72fd379b67b1ee2ea3286c078c26e313acd27e7ae
 aggregator programVK  = 0x4c3d7317a62f651d813ba6afbbce59e45eaa7c009ab2a9b51d2f0fb3e7987254
 rootCVadcopFinal      = 0xcf2a309856f107b143836ada112806da71ae11567fa3f2d2050baba5381c7b7d

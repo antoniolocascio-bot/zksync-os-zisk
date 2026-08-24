@@ -73,6 +73,33 @@ record it in `guest/GUEST_PROGRAM_VK` or
 cargo-zisk program-setup -e out/zksync-os-zisk-guest -k ~/.zisk/provingKey
 ```
 
+## Release assets
+
+A published GitHub release starts the release-artifacts workflow. The job
+rebuilds both ELFs, checks their committed SHA-256 pins, and derives both
+program VKs with the CPU ZiSK package and the STARK proving key. It also reads
+the vadcop-final VK from that proving key and computes the era VK hash:
+
+```text
+keccak256(innerProgramVK || aggregatorProgramVK || rootCVadcopFinal)
+```
+
+The release carries these assets:
+
+| Asset | Contents |
+|---|---|
+| `zksync-os-zisk-guest` | State-transition guest ELF. |
+| `zksync-os-zisk-guest-aggregator` | Range-aggregator guest ELF. |
+| `*.verkey.bin` | Raw ZiSK VK files with four little-endian u64 limbs. |
+| `zisk-release.json` | ELF hashes, canonical VK values, limbs, tag, commit and era VK hash. |
+| `SHA256SUMS` | SHA-256 checksums for the two ELFs, three VK files and manifest. |
+
+Consumers pin a release tag, verify `SHA256SUMS`, and read the canonical keys
+from `zisk-release.json`. The manifest associates each full ELF hash with the
+program VK derived from that ELF. The release job checks the derived program
+VKs against the two committed `GUEST_PROGRAM_VK` pins before it uploads any
+asset.
+
 [docs/multiprover.md](docs/multiprover.md) covers where each pin then lands
 in the server config and in the L1 verifier.
 

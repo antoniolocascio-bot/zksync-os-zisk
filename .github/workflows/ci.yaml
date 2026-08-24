@@ -78,6 +78,27 @@ jobs:
       - run: cargo deny --log-level error check --config ../deny.toml licenses advisories sources
         working-directory: lib
 
+  guest:
+    name: guest (host hook tests)
+    runs-on: ubuntu-latest
+    env:
+      LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+      LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: guest
+      # The host tests link ZiSK's C crypto fallbacks. The package provides
+      # the GMP headers, static archives and runtime library they require.
+      - name: install GMP
+        run: sudo apt-get update && sudo apt-get install -y libgmp-dev
+      # The non-test binary uses the ZiSK entrypoint and is target-only.
+      # Host tests compile the crypto hooks with their software fallbacks.
+      - run: cargo test
+        working-directory: guest
+
   guest-aggregator:
     name: guest-aggregator (clippy, tests, deny)
     runs-on: ubuntu-latest
@@ -99,6 +120,7 @@ jobs:
       - run: >
           cargo clippy --all-targets -- -D warnings
           -A unexpected_cfgs
+          -A unknown_lints
           -A clippy::chunks_exact_to_as_chunks
         working-directory: guest-aggregator
       - run: cargo test

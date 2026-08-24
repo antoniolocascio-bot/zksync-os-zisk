@@ -1,0 +1,120 @@
+name: Release artifacts
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to rebuild
+        required: true
+        type: string
+
+concurrency:
+  group: release-artifacts-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  ZISK_VERSION: "0.18.0"
+
+jobs:
+  release-artifacts:
+    name: derive and publish the release bundle
+    runs-on: matterlabs-ci-runner-high-performance
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+          fetch-depth: 0
+
+      - name: validate the release tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+          tag_commit="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          head_commit="$(git rev-parse HEAD)"
+          test "$tag_commit" = "$head_commit"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null
+
+      # These scripts check each image against its committed SHA-256 pin.
+      - name: build both guest ELFs
+        run: |
+          ./build-guest.sh
+          ./build-aggregator.sh
+
+      - name: install ZiSK system dependencies
+        run: |
+          SUDO=""
+          [[ "$(id -u)" -eq 0 ]] || SUDO="sudo"
+          $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update
+          $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xz-utils jq curl build-essential qemu-system libomp-dev libgmp-dev \
+            nlohmann-json3-dev protobuf-compiler uuid-dev libgrpc++-dev \
+            libsecp256k1-dev libsodium-dev libpqxx-dev nasm libopenmpi-dev \
+            openmpi-bin openmpi-common libclang-dev clang gcc-riscv64-unknown-elf
+
+      # The CPU package computes ROM setup data from the STARK proving key.
+      - name: install rustup
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: install ZiSK and the STARK proving key
+        run: |
+          curl -sSfL \
+            "https://raw.githubusercontent.com/0xPolygonHermez/zisk/v${ZISK_VERSION}/ziskup/install.sh" \
+            -o /tmp/ziskup-install.sh
+          bash /tmp/ziskup-install.sh -v "$ZISK_VERSION" --provingkey --cpu -y
+          echo "$HOME/.zisk/bin" >> "$GITHUB_PATH"
+
+      - name: derive both program VKs
+        run: |
+          .github/scripts/derive-vk.sh out/zksync-os-zisk-guest /tmp/vk-inner
+          .github/scripts/derive-vk.sh out/zksync-os-zisk-guest-aggregator /tmp/vk-aggregator
+
+      - name: assemble the release assets
+        run: |
+          vadcop_verkey="$HOME/.zisk/provingKey/zisk/vadcop_final/vadcop_final.verkey.bin"
+          test -f "$vadcop_verkey"
+          .github/scripts/build-release-assets.py \
+            --tag "$RELEASE_TAG" \
+            --commit "$(git rev-parse HEAD)" \
+            --zisk-version "$ZISK_VERSION" \
+            --inner-elf out/zksync-os-zisk-guest \
+            --inner-verkey /tmp/vk-inner/program.verkey.bin \
+            --inner-record guest/GUEST_PROGRAM_VK \
+            --aggregator-elf out/zksync-os-zisk-guest-aggregator \
+            --aggregator-verkey /tmp/vk-aggregator/program.verkey.bin \
+            --aggregator-record guest-aggregator/GUEST_PROGRAM_VK \
+            --vadcop-verkey "$vadcop_verkey" \
+            --output release-assets
+          (cd release-assets && sha256sum --check SHA256SUMS)
+
+      - name: keep the derivation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-derivation-${{ env.RELEASE_TAG }}
+          path: |
+            /tmp/vk-inner/program-setup.log
+            /tmp/vk-aggregator/program-setup.log
+          if-no-files-found: warn
+
+      - name: publish the release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t assets < <(find release-assets -maxdepth 1 -type f -print | sort)
+          test "${#assets[@]}" -eq 7
+          gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber "${assets[@]}"
