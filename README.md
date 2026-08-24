@@ -25,7 +25,7 @@ and the off-chain verification helpers the server calls.
 | `guest-aggregator/` | The ZiSK range-aggregator guest — verifies one per-batch proof per batch inside the zkVM and commits the range binding digest. |
 | `prover/` | The proving daemon (`zksync-os-zisk-prover-service`) — polls the server's `/ZiSK/*` and `/ZiSK-AGG/*` job API, drives the ZiSK toolchain over both ELFs, and submits the results. |
 | `zisk-verifier/` | Off-chain verification helpers. The server calls them to check a submitted proof before it composes the L1 payload. |
-| `tools/` | The EEST conformance lane, the guest-memory benchmark, and the host-side input assemblers. |
+| `tools/` | The committed EEST native-reference corpus and target-emulation lane, the guest-memory benchmark, and host-side input assemblers. |
 | `docker/` | The pinned containers of the reproducible guest builds. |
 
 The Solidity verifiers live in
@@ -123,6 +123,13 @@ ziskemu -e out/zksync-os-zisk-guest -i /tmp/proven_input.bin
 # Execute it through the full proving pipeline, without a proof
 cargo-zisk execute -e out/zksync-os-zisk-guest -i /tmp/proven_input.bin \
     --emulator -k ~/.zisk/provingKey
+
+# Replay the committed EEST native-reference corpus (the pull-request gate)
+cargo build --release --manifest-path tools/test-utils/Cargo.toml \
+    --bin dump_to_batchinput
+tools/run-eest-native.py \
+    --reader tools/test-utils/target/release/dump_to_batchinput \
+    --output /tmp/zisk-eest-native
 
 # Prove one batch end to end (needs a GPU and both proving keys)
 cargo-zisk program-setup -e out/zksync-os-zisk-guest -k ~/.zisk/provingKey -g

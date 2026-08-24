@@ -1,0 +1,304 @@
+{
+  "eest_version": "5.4.0",
+  "format": {
+    "archive": "tar+zstd",
+    "case": "zkos-state-dump-json",
+    "case_name": "sha256-of-uncompressed-json"
+  },
+  "native_reference": {
+    "commit": "736fd93ca9f20bf576240cc0de92d5d483da15a3",
+    "protocol_version_minor": 31,
+    "repository": "antoniolocascio-bot/zksync-os"
+  },
+  "schema_version": 1,
+  "shards": [
+    {
+      "bytes": 3134,
+      "file": "shards/berlin_eip2929_gas_cost_increases.tar.zst",
+      "filter": "berlin/eip2929_gas_cost_increases",
+      "id": "berlin_eip2929_gas_cost_increases",
+      "sha256": "03332849943f955ce835400b0ccecf85034b6de27e59dd7c920266fc51494c61",
+      "source_cases": 4,
+      "unique_cases": 4
+    },
+    {
+      "bytes": 957716,
+      "file": "shards/berlin_eip2930_access_list.tar.zst",
+      "filter": "berlin/eip2930_access_list",
+      "id": "berlin_eip2930_access_list",
+      "sha256": "2e45b921dbdf758b376e402f0bf11189fc31f81e4e67c6e110fc9201a7d790b6",
+      "source_cases": 2132,
+      "unique_cases": 1761
+    },
+    {
+      "bytes": 7148,
+      "file": "shards/byzantium_eip196_ec_add_mul.tar.zst",
+      "filter": "byzantium/eip196_ec_add_mul",
+      "id": "byzantium_eip196_ec_add_mul",
+      "sha256": "181dfff225aef60cfc41aa7537d5f7b91831873ce1a7256b6583c625785238f3",
+      "source_cases": 16,
+      "unique_cases": 12
+    },
+    {
+      "bytes": 4517,
+      "file": "shards/byzantium_eip197_ec_pairing.tar.zst",
+      "filter": "byzantium/eip197_ec_pairing",
+      "id": "byzantium_eip197_ec_pairing",
+      "sha256": "abc980351a7f18a881d0bede4662d1b094cd48628d224f0eaeb97d698c92690c",
+      "source_cases": 8,
+      "unique_cases": 7
+    },
+    {
+      "bytes": 62291,
+      "file": "shards/byzantium_eip198_modexp_precompile.tar.zst",
+      "filter": "byzantium/eip198_modexp_precompile",
+      "id": "byzantium_eip198_modexp_precompile",
+      "sha256": "f5f6fc50fcf785ba45cdbc6136ccb1cdf22aa17ae64567bf017d7a3b842fbe7a",
+      "source_cases": 156,
+      "unique_cases": 126
+    },
+    {
+      "bytes": 350881,
+      "file": "shards/cancun_eip1153_tstore.tar.zst",
+      "filter": "cancun/eip1153_tstore",
+      "id": "cancun_eip1153_tstore",
+      "sha256": "cfca108fb4b59842ee08ea8e8e9a9622db15d4833104b6f6431ef77265137a11",
+      "source_cases": 496,
+      "unique_cases": 470
+    },
+    {
+      "bytes": 186729,
+      "file": "shards/cancun_eip5656_mcopy.tar.zst",
+      "filter": "cancun/eip5656_mcopy",
+      "id": "cancun_eip5656_mcopy",
+      "sha256": "1f24ec214178413a09b3eecf3af0fb59d7fd5fcef23b2c6660d3f1c2f644a616",
+      "source_cases": 372,
+      "unique_cases": 301
+    },
+    {
+      "bytes": 503629,
+      "file": "shards/cancun_eip6780_selfdestruct.tar.zst",
+      "filter": "cancun/eip6780_selfdestruct",
+      "id": "cancun_eip6780_selfdestruct",
+      "sha256": "de6ce43ab5ec7b2980ea408d66c1b3c1ec89dcac5b38ec6f79c6147c00794a4e",
+      "source_cases": 490,
+      "unique_cases": 469
+    },
+    {
+      "bytes": 8752,
+      "file": "shards/cancun_eip7516_blobgasfee.tar.zst",
+      "filter": "cancun/eip7516_blobgasfee",
+      "id": "cancun_eip7516_blobgasfee",
+      "sha256": "d58f29d3437fc4ab252217c79821f3de6e13a4e3a15f0f1a8158886d316218b7",
+      "source_cases": 16,
+      "unique_cases": 15
+    },
+    {
+      "bytes": 68439,
+      "file": "shards/constantinople_eip1014_create2.tar.zst",
+      "filter": "constantinople/eip1014_create2",
+      "id": "constantinople_eip1014_create2",
+      "sha256": "46c37c1016525f47d973c9d191a931d3fd7d7e87ceb67198723c462a73d28380",
+      "source_cases": 96,
+      "unique_cases": 96
+    },
+    {
+      "bytes": 28727,
+      "file": "shards/constantinople_eip145_bitwise_shift.tar.zst",
+      "filter": "constantinople/eip145_bitwise_shift",
+      "id": "constantinople_eip145_bitwise_shift",
+      "sha256": "f5915edbeab720fa1ca3ee9d24580ef4493b70d8ba5bca4469534444628d2060",
+      "source_cases": 12,
+      "unique_cases": 11
+    },
+    {
+      "bytes": 124949,
+      "file": "shards/frontier_create.tar.zst",
+      "filter": "frontier/create",
+      "id": "frontier_create",
+      "sha256": "e4b19ffadbf3ebf121b16ccb8a266f48b258269826e3c8a91466531963f05a49",
+      "source_cases": 48,
+      "unique_cases": 44
+    },
+    {
+      "bytes": 39788,
+      "file": "shards/frontier_identity_precompile.tar.zst",
+      "filter": "frontier/identity_precompile",
+      "id": "frontier_identity_precompile",
+      "sha256": "5ba91f491e1e2403af6d8cab7cece3c341e66288661442be5acd46a8d0fc1e17",
+      "source_cases": 96,
+      "unique_cases": 80
+    },
+    {
+      "bytes": 2172235,
+      "file": "shards/frontier_opcodes.tar.zst",
+      "filter": "frontier/opcodes",
+      "id": "frontier_opcodes",
+      "sha256": "7587f5db82a2864c97d535c651325e7c7efc64c53e0760144e4c26c641ace6f4",
+      "source_cases": 2572,
+      "unique_cases": 2070
+    },
+    {
+      "bytes": 287676,
+      "file": "shards/frontier_precompiles.tar.zst",
+      "filter": "frontier/precompiles",
+      "id": "frontier_precompiles",
+      "sha256": "31f520dd0829a573332a4e3d7e8dc6e3770cf9df2bd1657f1bcea462d9c91b01",
+      "source_cases": 292,
+      "unique_cases": 254
+    },
+    {
+      "bytes": 3303,
+      "file": "shards/homestead_coverage.tar.zst",
+      "filter": "homestead/coverage",
+      "id": "homestead_coverage",
+      "sha256": "54a63beca1cf2acefac22ab7db83d1f24ecd3e51486c4660db24fee193dc3696",
+      "source_cases": 4,
+      "unique_cases": 4
+    },
+    {
+      "bytes": 13961,
+      "file": "shards/homestead_identity_precompile.tar.zst",
+      "filter": "homestead/identity_precompile",
+      "id": "homestead_identity_precompile",
+      "sha256": "ed06ede2233b6a140fbc321fa9fb9cce5d364cb9938ea2c741eb5bfa2ed01036",
+      "source_cases": 32,
+      "unique_cases": 29
+    },
+    {
+      "bytes": 6267,
+      "file": "shards/istanbul_eip1344_chainid.tar.zst",
+      "filter": "istanbul/eip1344_chainid",
+      "id": "istanbul_eip1344_chainid",
+      "sha256": "eb8eeb00dbe844c0f1e0f07dbdbee289469299d49ab49cf431114e4e3066b685",
+      "source_cases": 14,
+      "unique_cases": 11
+    },
+    {
+      "bytes": 187728,
+      "file": "shards/istanbul_eip152_blake2.tar.zst",
+      "filter": "istanbul/eip152_blake2",
+      "id": "istanbul_eip152_blake2",
+      "sha256": "c9eaf9597277993a6ce9b2c1b641404bdfac9edf13963d5d2850d391ad88736c",
+      "source_cases": 468,
+      "unique_cases": 386
+    },
+    {
+      "bytes": 2801,
+      "file": "shards/london_eip1559_fee_market_change.tar.zst",
+      "filter": "london/eip1559_fee_market_change",
+      "id": "london_eip1559_fee_market_change",
+      "sha256": "346974d9b74d9def452c73899abb18fee960c69bc7b190a22a48b6407d6338d3",
+      "source_cases": 4,
+      "unique_cases": 3
+    },
+    {
+      "bytes": 361284,
+      "file": "shards/osaka_eip7883_modexp_gas_increase.tar.zst",
+      "filter": "osaka/eip7883_modexp_gas_increase",
+      "id": "osaka_eip7883_modexp_gas_increase",
+      "sha256": "b741a4938cea8123caa4428f5633a84897530086e36f844f20a8fef5ea1a49ac",
+      "source_cases": 604,
+      "unique_cases": 494
+    },
+    {
+      "bytes": 750759,
+      "file": "shards/osaka_eip7951_p256verify_precompiles.tar.zst",
+      "filter": "osaka/eip7951_p256verify_precompiles",
+      "id": "osaka_eip7951_p256verify_precompiles",
+      "sha256": "b2b30aa491e6464798bc80b8edfd515960d7114ce72f03f0844e0e44a1993918",
+      "source_cases": 794,
+      "unique_cases": 794
+    },
+    {
+      "bytes": 71764,
+      "file": "shards/paris_eip7610_create_collision.tar.zst",
+      "filter": "paris/eip7610_create_collision",
+      "id": "paris_eip7610_create_collision",
+      "sha256": "162f756ba5c71b8783707895266d2f02b376daeff388a52355e7dfccf86e7cbc",
+      "source_cases": 180,
+      "unique_cases": 158
+    },
+    {
+      "bytes": 8061,
+      "file": "shards/prague_eip2537_bls_12_381_precompiles.tar.zst",
+      "filter": "prague/eip2537_bls_12_381_precompiles",
+      "id": "prague_eip2537_bls_12_381_precompiles",
+      "sha256": "a544c207e6422d197f55ff4c73c0fe36f1b2baf375414167aed168fd450713f4",
+      "source_cases": 14,
+      "unique_cases": 11
+    },
+    {
+      "bytes": 5651133,
+      "file": "shards/prague_eip7702_set_code_tx.tar.zst",
+      "filter": "prague/eip7702_set_code_tx",
+      "id": "prague_eip7702_set_code_tx",
+      "sha256": "e7a0df4bcf6ce15f31f36d62adbddea7b6a2073e125307826912b97b17151e85",
+      "source_cases": 1090,
+      "unique_cases": 898
+    },
+    {
+      "bytes": 28934,
+      "file": "shards/shanghai_eip3651_warm_coinbase.tar.zst",
+      "filter": "shanghai/eip3651_warm_coinbase",
+      "id": "shanghai_eip3651_warm_coinbase",
+      "sha256": "30d9881589d163274e1f16351541b4ebf4269fe266ec4fbb2672be1c921edf85",
+      "source_cases": 64,
+      "unique_cases": 61
+    },
+    {
+      "bytes": 18010,
+      "file": "shards/shanghai_eip3855_push0.tar.zst",
+      "filter": "shanghai/eip3855_push0",
+      "id": "shanghai_eip3855_push0",
+      "sha256": "9e507204023933a57e0e003bdf6e3ca6bdbe2323d4ffebb3bf5852d1ef4ddad8",
+      "source_cases": 40,
+      "unique_cases": 35
+    },
+    {
+      "bytes": 132339,
+      "file": "shards/shanghai_eip3860_initcode.tar.zst",
+      "filter": "shanghai/eip3860_initcode",
+      "id": "shanghai_eip3860_initcode",
+      "sha256": "f84c4a00e39e3d3a038976f4a34ad9f4d524a6da468786f589c214022472c036",
+      "source_cases": 248,
+      "unique_cases": 193
+    }
+  ],
+  "skipped_filters": [
+    {
+      "filter": "static/state_tests",
+      "reason": "excluded from the per-PR corpus: native reference generation contains pathological long-running cases"
+    },
+    {
+      "filter": "cancun/eip4844_blobs",
+      "reason": "no state dumps; evm-tester exit 101"
+    },
+    {
+      "filter": "frontier/touch",
+      "reason": "no state dumps; evm-tester exit 0"
+    },
+    {
+      "filter": "osaka/eip7594_peerdas",
+      "reason": "no state dumps; evm-tester exit 0"
+    },
+    {
+      "filter": "osaka/eip7823_modexp_upper_bounds",
+      "reason": "no state dumps; evm-tester exit 0"
+    },
+    {
+      "filter": "osaka/eip7825_transaction_gas_limit_cap",
+      "reason": "no state dumps; evm-tester exit 0"
+    },
+    {
+      "filter": "osaka/eip7939_count_leading_zeros",
+      "reason": "no state dumps; evm-tester exit 0"
+    },
+    {
+      "filter": "prague/eip7623_increase_calldata_cost",
+      "reason": "no state dumps; evm-tester exit 0"
+    }
+  ],
+  "source_case_count": 10362,
+  "unique_case_count": 8797
+}

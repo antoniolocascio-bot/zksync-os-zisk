@@ -15,8 +15,8 @@ env:
 # those trees land together with an intentional VK rotation; until then CI
 # checks them with the known lint set allowed. The prover crate and the
 # zisk-verifier crate are not part of any guest ELF. CI holds them to the
-# strict bar. Proving itself (GPU keys, ~41 GB setup) and the full EEST
-# corpus run outside CI.
+# strict bar. Proving itself (GPU keys, ~41 GB setup) and target emulation of
+# the full EEST corpus run outside CI; the committed corpus replays natively.
 jobs:
   prover:
     name: prover (fmt, clippy, tests, deny)
@@ -177,6 +177,36 @@ jobs:
         working-directory: tools/test-utils
       - run: cargo deny --log-level error check --config ../../deny.toml licenses advisories sources
         working-directory: tools/test-utils
+
+  eest-native:
+    name: committed EEST corpus (native)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/test-utils
+      - name: install corpus decompressor
+        run: sudo apt-get update && sudo apt-get install -y zstd
+      - name: build the native corpus reader
+        run: cargo build --release --bin dump_to_batchinput
+        working-directory: tools/test-utils
+      # Each committed dump includes its witness and native ZKsync OS
+      # commitments. The candidate branch reconstructs and executes it here.
+      - name: replay every committed EEST case
+        run: >
+          tools/run-eest-native.py
+          --reader tools/test-utils/target/release/dump_to_batchinput
+          --output "$RUNNER_TEMP/zisk-eest-native"
+      - name: keep unexpected corpus failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eest-native-failures
+          path: ${{ runner.temp }}/zisk-eest-native/failures
+          if-no-files-found: ignore
 
   guest-elf-integrity:
     name: guest ELFs reproduce the recorded hashes

@@ -1,4 +1,4 @@
-# EVM-corpus target-emulation lane
+# EVM-corpus native and target lanes
 
 Runs the ethereum/execution-spec-tests corpus through production-semantics
 zksync-os, converts every executed block into a wire-v2 `BatchInput`, checks
@@ -14,12 +14,42 @@ waivers remain. Any other outcome is a regression or a new finding. The count
 spans 35 of the 36 chunks; `static_state_tests` needs a run of its own (see
 **Known sharp edges**).
 
+## Pull-request native gate
+
+The 35-family baseline is committed under `tools/eest-corpus/` as 28 nonempty
+content-addressed shards plus an explicit list of seven filters that emit no
+state dump. It preserves 10,362 source cases as 8,797 unique canonical state
+transitions. The candidate branch replays every unique transition through
+`dump_to_batchinput` on each pull request:
+
+```text
+8,797 unique cases → 8,774 pass, 23 deduplicated waivers, 0 unexpected
+```
+
+The manifest pins EEST v5.4.0, the native state-dump producer commit, case
+counts, compressed sizes, and each shard's SHA-256. Canonicalization sorts JSON
+object keys, leaves by tree index, and preimages by hash; exact duplicate native
+transitions in the committed dataset run once. `corpus-waivers.tsv` remains the
+bounded allowlist. Producer witness insertion order can affect regenerated
+shards, so corpus rotations require manifest and data review.
+
+With a prebuilt reader, the full replay took 15.5 seconds at eight-way
+parallelism during local validation. PR CI also builds the reader from the
+candidate branch. It requires neither a second repository checkout nor the
+13 GB fixture tree.
+
+`static/state_tests` remains an explicit exclusion because native reference
+generation contains pathological long-running cases. The target-emulation lane
+also stays separate: native replay cannot test the ZiSK entrypoint, fcall ABI,
+target memory behavior, or target crypto hooks.
+
 ## Architecture
 
 ```
 EEST fixtures ──▶ evm_tester (zksync-os with the state-dump hook,
                   ZKOS_STATE_DUMP_DIR set, production-semantics build)
                   ──▶ one JSON bundle per executed block
+                  └──▶ canonical committed shards ──▶ PR native replay
 bundle ──▶ dump_to_batchinput (tools/test-utils/, this repo)
            ──▶ BatchInput bincode + framed input.bin, validated vs native
 input.bin ──▶ ziskemu + guest ELF ──▶ clean exit or attributed panic
@@ -65,6 +95,14 @@ input.bin ──▶ ziskemu + guest ELF ──▶ clean exit or attributed panic
 ## Running
 
 ```bash
+# Every committed native-reference transition (the PR gate)
+cargo build --release --manifest-path tools/test-utils/Cargo.toml \
+  --bin dump_to_batchinput
+tools/run-eest-native.py \
+  --reader tools/test-utils/target/release/dump_to_batchinput \
+  --output /tmp/zisk-eest-native
+
+# Fixture regeneration plus target emulation
 tools/corpus-emu.sh --all                       # full suite (36 chunks)
 tools/corpus-emu.sh istanbul/eip152_blake2 ...  # targeted families
 ```
