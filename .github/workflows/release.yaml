@@ -80,8 +80,8 @@ jobs:
 
       - name: derive both program VKs
         run: |
-          .github/scripts/derive-vk.sh out/zksync-os-zisk-guest /tmp/vk-inner
           .github/scripts/derive-vk.sh out/zksync-os-zisk-guest-aggregator /tmp/vk-aggregator
+          .github/scripts/derive-vk.sh out/zksync-os-zisk-guest /tmp/vk-inner
 
       - name: assemble the release assets
         run: |
@@ -98,7 +98,8 @@ jobs:
             --aggregator-verkey /tmp/vk-aggregator/program.verkey.bin \
             --aggregator-record guest-aggregator/GUEST_PROGRAM_VK \
             --vadcop-verkey "$vadcop_verkey" \
-            --output release-assets
+            --output release-assets \
+            --summary "$GITHUB_STEP_SUMMARY"
           (cd release-assets && sha256sum --check SHA256SUMS)
 
       - name: keep the derivation logs

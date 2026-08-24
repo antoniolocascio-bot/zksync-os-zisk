@@ -18,6 +18,14 @@ env:
 # strict bar. Proving itself (GPU keys, ~41 GB setup) and target emulation of
 # the full EEST corpus run outside CI; the committed corpus replays natively.
 jobs:
+  release-automation:
+    name: release automation (unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -B -m unittest discover -s .github/scripts/tests -v
+      - run: bash -n .github/scripts/derive-vk.sh
+
   prover:
     name: prover (fmt, clippy, tests, deny)
     runs-on: ubuntu-latest

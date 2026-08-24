@@ -248,9 +248,11 @@ pinned-container reproducible builds (`build-guest.sh`,
 `build-aggregator.sh`; recorded hashes in `*/GUEST_ELF_SHA256`, checked in
 CI). **The `lib/`, `guest/` and `guest-aggregator/` sources are byte-frozen
 inputs of those builds** — any change there, including formatting, rotates
-the programVKs. Rotations are deliberate: rebuild with `--record`, re-derive
-the VK with `cargo-zisk program-setup` on a prover box, and update the
-server tripwires, the L1 pins and the proof fixtures together.
+the programVKs. Rotations are deliberate: rebuild with `--record`, then run
+the manually dispatched `Rotate program VK pins` workflow against that branch.
+It re-derives both identities and opens a draft pin-update PR when required.
+Update the server tripwires, the L1 pins and the proof fixtures together from
+the reviewed release manifest.
 
 The server keys its per-batch tripwires by protocol version, so an upgrade
 window where two versions coexist validates each batch against its own guest

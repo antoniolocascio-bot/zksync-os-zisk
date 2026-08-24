@@ -1,0 +1,163 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SCRIPTS = Path(__file__).resolve().parents[1]
+ROTATE_SCRIPT = SCRIPTS / "rotate-program-vk.py"
+
+
+def load_script(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+release_assets = load_script("build_release_assets", SCRIPTS / "build-release-assets.py")
+
+
+def canonical(limbs: list[int]) -> str:
+    return "0x" + b"".join(limb.to_bytes(8, "big") for limb in limbs).hex()
+
+
+def verkey(limbs: list[int]) -> bytes:
+    return b"".join(limb.to_bytes(8, "little") for limb in limbs)
+
+
+class RotateProgramVkTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.elf = self.root / "guest"
+        self.elf.write_bytes(b"reviewed guest ELF")
+        self.elf_sha_record = self.root / "GUEST_ELF_SHA256"
+        elf_digest = hashlib.sha256(self.elf.read_bytes()).hexdigest()
+        self.elf_sha_record.write_text(f"{elf_digest}  guest\n")
+        self.record = self.root / "GUEST_PROGRAM_VK"
+        self.recorded_limbs = [1, 2, 3, 4]
+        self.recorded = canonical(self.recorded_limbs)
+        self.record.write_text(
+            f"# reviewed pin\n{self.recorded}\n\n"
+            "# History: 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\n"
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def run_rotation(self, limbs: list[int], update: bool = False) -> dict[str, object]:
+        verkey_path = self.root / "program.verkey.bin"
+        verkey_path.write_bytes(verkey(limbs))
+        metadata = self.root / "metadata.json"
+        command = [
+            sys.executable,
+            str(ROTATE_SCRIPT),
+            "--kind",
+            "inner",
+            "--elf",
+            str(self.elf),
+            "--elf-sha-record",
+            str(self.elf_sha_record),
+            "--verkey",
+            str(verkey_path),
+            "--record",
+            str(self.record),
+            "--zisk-version",
+            "0.18.0",
+            "--date",
+            "2026-08-24",
+            "--run-url",
+            "https://github.com/matter-labs/zksync-os-zisk/actions/runs/123",
+            "--metadata",
+            str(metadata),
+        ]
+        if update:
+            command.append("--update")
+        subprocess.run(
+            command,
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        return json.loads(metadata.read_text())
+
+    def test_current_pin_does_not_rewrite_record(self) -> None:
+        before = self.record.read_bytes()
+        metadata = self.run_rotation(self.recorded_limbs, update=True)
+        self.assertEqual(self.record.read_bytes(), before)
+        self.assertFalse(metadata["changed"])
+        self.assertFalse(metadata["updated"])
+
+    def test_unapproved_change_is_reported_without_rewrite(self) -> None:
+        before = self.record.read_bytes()
+        metadata = self.run_rotation([5, 6, 7, 8])
+        self.assertEqual(self.record.read_bytes(), before)
+        self.assertTrue(metadata["changed"])
+        self.assertFalse(metadata["updated"])
+
+    def test_elf_digest_must_match_reviewed_pin(self) -> None:
+        before = self.record.read_bytes()
+        self.elf_sha_record.write_text(f"{'0' * 64}  guest\n")
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_rotation([5, 6, 7, 8], update=True)
+        self.assertEqual(self.record.read_bytes(), before)
+
+    def test_approved_change_updates_pin_and_preserves_history(self) -> None:
+        derived_limbs = [5, 6, 7, 8]
+        derived = canonical(derived_limbs)
+        metadata = self.run_rotation(derived_limbs, update=True)
+        result = self.record.read_text()
+        self.assertIn(f"\n{derived}\n", result)
+        self.assertIn(f"# History: {self.recorded}", result)
+        self.assertIn("# History: 0xffffffffffff", result)
+        self.assertTrue(metadata["changed"])
+        self.assertTrue(metadata["updated"])
+        self.assertEqual(metadata["program_vk_limbs"], derived_limbs)
+
+
+class ReleaseSummaryTests(unittest.TestCase):
+    def test_summary_contains_operator_identities(self) -> None:
+        manifest = {
+            "release": {"tag": "1.2.3", "commit": "a" * 40},
+            "toolchain": {"zisk_version": "0.18.0"},
+            "programs": {
+                "inner": {
+                    "elf": {"sha256": "b" * 64},
+                    "program_vk": canonical([1, 2, 3, 4]),
+                    "program_vk_limbs": [1, 2, 3, 4],
+                },
+                "aggregator": {
+                    "elf": {"sha256": "c" * 64},
+                    "program_vk": canonical([5, 6, 7, 8]),
+                    "program_vk_limbs": [5, 6, 7, 8],
+                },
+            },
+            "vadcop_final": {
+                "root_c": canonical([9, 10, 11, 12]),
+                "root_c_limbs": [9, 10, 11, 12],
+            },
+            "era_verification_key_hash": "0x" + "d" * 64,
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            summary = Path(temporary) / "summary.md"
+            release_assets.append_summary(summary, manifest)
+            result = summary.read_text()
+        self.assertIn("## ZiSK release identities", result)
+        self.assertIn("ZiSK `0.18.0`", result)
+        self.assertIn("`[1, 2, 3, 4]`", result)
+        self.assertIn("`[9, 10, 11, 12]`", result)
+        self.assertIn("0x" + "d" * 64, result)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -145,6 +145,39 @@ def program_entry(
     }
 
 
+def append_summary(path: Path, manifest: dict[str, object]) -> None:
+    programs = manifest["programs"]
+    inner = programs["inner"]
+    aggregator = programs["aggregator"]
+    vadcop = manifest["vadcop_final"]
+    release = manifest["release"]
+    toolchain = manifest["toolchain"]
+
+    def limbs(value: dict[str, object], field: str = "program_vk_limbs") -> str:
+        return ", ".join(str(limb) for limb in value[field])
+
+    lines = [
+        "## ZiSK release identities",
+        "",
+        f"Release `{release['tag']}` at `{release['commit']}` with ZiSK "
+        f"`{toolchain['zisk_version']}`.",
+        "",
+        "| Program | ELF SHA-256 | Program VK | Root limbs |",
+        "|---|---|---|---|",
+        f"| inner | `{inner['elf']['sha256']}` | `{inner['program_vk']}` | "
+        f"`[{limbs(inner)}]` |",
+        f"| aggregator | `{aggregator['elf']['sha256']}` | "
+        f"`{aggregator['program_vk']}` | `[{limbs(aggregator)}]` |",
+        f"| vadcop-final | — | `{vadcop['root_c']}` | "
+        f"`[{limbs(vadcop, 'root_c_limbs')}]` |",
+        "",
+        f"Era verification-key hash: `{manifest['era_verification_key_hash']}`",
+        "",
+    ]
+    with path.open("a") as stream:
+        stream.write("\n".join(lines))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tag", required=True)
@@ -158,6 +191,7 @@ def main() -> None:
     parser.add_argument("--aggregator-record", type=Path, required=True)
     parser.add_argument("--vadcop-verkey", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--summary", type=Path)
     args = parser.parse_args()
 
     if keccak256(b"").hex() != "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470":
@@ -231,6 +265,9 @@ def main() -> None:
     checksum_paths = sorted(path for path in args.output.iterdir() if path.is_file())
     checksum_lines = [f"{sha256(path)}  {path.name}" for path in checksum_paths]
     (args.output / "SHA256SUMS").write_text("\n".join(checksum_lines) + "\n")
+
+    if args.summary is not None:
+        append_summary(args.summary, manifest)
 
     print(f"inner program VK:      {inner_vk}")
     print(f"aggregator program VK: {aggregator_vk}")

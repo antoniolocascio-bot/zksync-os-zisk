@@ -1,0 +1,271 @@
+name: Rotate program VK pins
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: Branch containing the reviewed guest ELF hash pins
+        required: true
+        default: main
+        type: string
+      rotation_scope:
+        description: Program pins authorized to change in the draft PR
+        required: true
+        default: inner
+        type: choice
+        options:
+          - inner
+          - aggregator
+          - both
+
+concurrency:
+  group: rotate-program-vks-${{ inputs.base_ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  ZISK_VERSION: "0.18.0"
+
+jobs:
+  rotate:
+    name: derive pins and propose a draft PR
+    runs-on: matterlabs-ci-runner-high-performance
+    timeout-minutes: 180
+    env:
+      BASE_REF: ${{ inputs.base_ref }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.base_ref }}
+          fetch-depth: 0
+
+      - name: validate the base branch
+        run: |
+          git check-ref-format --branch "$BASE_REF"
+          remote_commit="$(git ls-remote --heads origin "refs/heads/$BASE_REF" | awk '{print $1}')"
+          test -n "$remote_commit"
+          test "$(git rev-parse HEAD)" = "$remote_commit"
+
+      # These scripts require each reproducible ELF to agree with the reviewed
+      # digest on the selected base branch.
+      - name: build both guest ELFs
+        run: |
+          ./build-guest.sh
+          ./build-aggregator.sh
+
+      - name: install ZiSK system dependencies
+        run: |
+          SUDO=""
+          [[ "$(id -u)" -eq 0 ]] || SUDO="sudo"
+          $SUDO env DEBIAN_FRONTEND=noninteractive apt-get update
+          $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            xz-utils jq curl build-essential qemu-system libomp-dev libgmp-dev \
+            nlohmann-json3-dev protobuf-compiler uuid-dev libgrpc++-dev \
+            libsecp256k1-dev libsodium-dev libpqxx-dev nasm libopenmpi-dev \
+            openmpi-bin openmpi-common libclang-dev clang gcc-riscv64-unknown-elf
+
+      - name: install rustup
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none
+          fi
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # ROM setup runs on the CPU package; it needs the STARK proving key but
+      # does not request GPU execution.
+      - name: install ZiSK and the STARK proving key
+        run: |
+          curl -sSfL \
+            "https://raw.githubusercontent.com/0xPolygonHermez/zisk/v${ZISK_VERSION}/ziskup/install.sh" \
+            -o /tmp/ziskup-install.sh
+          bash /tmp/ziskup-install.sh -v "$ZISK_VERSION" --provingkey --cpu -y
+          echo "$HOME/.zisk/bin" >> "$GITHUB_PATH"
+
+      # The aggregator is the calibration case carried by the established
+      # runner session. A changed pin stops the release path until reviewed.
+      - name: derive both program VKs
+        run: |
+          .github/scripts/derive-vk.sh out/zksync-os-zisk-guest-aggregator /tmp/vk-aggregator
+          .github/scripts/derive-vk.sh out/zksync-os-zisk-guest /tmp/vk-inner
+
+      - name: update changed pins
+        id: update
+        env:
+          ROTATION_SCOPE: ${{ inputs.rotation_scope }}
+        run: |
+          today="$(date -u +%F)"
+          aggregator_update=()
+          inner_update=()
+          case "$ROTATION_SCOPE" in
+            inner) inner_update=(--update) ;;
+            aggregator) aggregator_update=(--update) ;;
+            both) aggregator_update=(--update); inner_update=(--update) ;;
+            *) echo "ERROR: invalid rotation scope: $ROTATION_SCOPE" >&2; exit 1 ;;
+          esac
+          .github/scripts/rotate-program-vk.py \
+            --kind aggregator \
+            --elf out/zksync-os-zisk-guest-aggregator \
+            --elf-sha-record guest-aggregator/GUEST_ELF_SHA256 \
+            --verkey /tmp/vk-aggregator/program.verkey.bin \
+            --record guest-aggregator/GUEST_PROGRAM_VK \
+            --zisk-version "$ZISK_VERSION" \
+            --date "$today" \
+            --run-url "$RUN_URL" \
+            --metadata /tmp/vk-aggregator/metadata.json \
+            "${aggregator_update[@]}"
+          .github/scripts/rotate-program-vk.py \
+            --kind inner \
+            --elf out/zksync-os-zisk-guest \
+            --elf-sha-record guest/GUEST_ELF_SHA256 \
+            --verkey /tmp/vk-inner/program.verkey.bin \
+            --record guest/GUEST_PROGRAM_VK \
+            --zisk-version "$ZISK_VERSION" \
+            --date "$today" \
+            --run-url "$RUN_URL" \
+            --metadata /tmp/vk-inner/metadata.json \
+            "${inner_update[@]}"
+
+          mapfile -t changed_files < <(git diff --name-only)
+          for path in "${changed_files[@]}"; do
+            case "$path" in
+              guest/GUEST_PROGRAM_VK|guest-aggregator/GUEST_PROGRAM_VK) ;;
+              *) echo "ERROR: unexpected generated change: $path" >&2; exit 1 ;;
+            esac
+          done
+          unexpected=false
+          if [[ "$(jq -r .changed /tmp/vk-inner/metadata.json)" == true && \
+                "$(jq -r .updated /tmp/vk-inner/metadata.json)" != true ]]; then
+            unexpected=true
+          fi
+          if [[ "$(jq -r .changed /tmp/vk-aggregator/metadata.json)" == true && \
+                "$(jq -r .updated /tmp/vk-aggregator/metadata.json)" != true ]]; then
+            unexpected=true
+          fi
+          echo "unexpected=$unexpected" >> "$GITHUB_OUTPUT"
+          if [[ ${#changed_files[@]} -eq 0 ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: write the derivation summary
+        run: |
+          inner_elf="$(jq -r .elf_sha256 /tmp/vk-inner/metadata.json)"
+          inner_vk="$(jq -r .derived_program_vk /tmp/vk-inner/metadata.json)"
+          inner_limbs="$(jq -r '.program_vk_limbs | map(tostring) | join(", ")' /tmp/vk-inner/metadata.json)"
+          inner_state="$(jq -r 'if .updated then "rotation proposed" elif .changed then "unexpected derivation" else "pin current" end' /tmp/vk-inner/metadata.json)"
+          aggregator_elf="$(jq -r .elf_sha256 /tmp/vk-aggregator/metadata.json)"
+          aggregator_vk="$(jq -r .derived_program_vk /tmp/vk-aggregator/metadata.json)"
+          aggregator_limbs="$(jq -r '.program_vk_limbs | map(tostring) | join(", ")' /tmp/vk-aggregator/metadata.json)"
+          aggregator_state="$(jq -r 'if .updated then "rotation proposed" elif .changed then "unexpected derivation" else "pin current" end' /tmp/vk-aggregator/metadata.json)"
+          cargo_zisk_version="$(cargo-zisk --version | head -1)"
+          {
+            echo "## ZiSK program VK derivation"
+            echo ""
+            echo "Base: \`$BASE_REF\` at \`$(git rev-parse HEAD)\`"
+            echo ""
+            echo "Toolchain: \`$cargo_zisk_version\`"
+            echo ""
+            echo "| Program | ELF SHA-256 | Program VK | Root limbs | Result |"
+            echo "|---|---|---|---|---|"
+            echo "| inner | \`$inner_elf\` | \`$inner_vk\` | \`[$inner_limbs]\` | $inner_state |"
+            echo "| aggregator | \`$aggregator_elf\` | \`$aggregator_vk\` | \`[$aggregator_limbs]\` | $aggregator_state |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: keep the derivation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: program-vk-derivation-${{ github.run_id }}
+          path: |
+            /tmp/vk-inner/program-setup.log
+            /tmp/vk-aggregator/program-setup.log
+          if-no-files-found: warn
+
+      - name: reject changes outside the authorized scope
+        if: steps.update.outputs.unexpected == 'true'
+        run: |
+          echo "ERROR: a derived program VK changed outside rotation_scope=${{ inputs.rotation_scope }}" >&2
+          exit 1
+
+      - name: open or update the draft rotation PR
+        if: steps.update.outputs.changed == 'true'
+        # The bot credential makes the PR a normal external event, so its
+        # pull-request checks run. Events created by github.token are suppressed.
+        env:
+          GH_TOKEN: ${{ secrets.ZKSYNC_ADMIN_BOT_ORG_REPO_WRITE }}
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "ERROR: ZKSYNC_ADMIN_BOT_ORG_REPO_WRITE is required to publish the rotation PR" >&2
+            exit 1
+          fi
+          source_commit="$(git rev-parse HEAD)"
+          branch="automation/program-vks-${source_commit:0:12}"
+          inner_vk="$(jq -r .derived_program_vk /tmp/vk-inner/metadata.json)"
+          aggregator_vk="$(jq -r .derived_program_vk /tmp/vk-aggregator/metadata.json)"
+          inner_elf="$(jq -r .elf_sha256 /tmp/vk-inner/metadata.json)"
+          aggregator_elf="$(jq -r .elf_sha256 /tmp/vk-aggregator/metadata.json)"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          git add guest/GUEST_PROGRAM_VK guest-aggregator/GUEST_PROGRAM_VK
+          git commit -m "chore(guest): rotate ZiSK program VK pins"
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$branch" >/dev/null; then
+            git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
+            expected="$(git rev-parse "refs/remotes/origin/$branch")"
+            git push --force-with-lease="refs/heads/$branch:$expected" \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              "HEAD:refs/heads/$branch"
+          else
+            git push \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+              "HEAD:refs/heads/$branch"
+          fi
+
+          body="$RUNNER_TEMP/program-vk-rotation.md"
+          {
+            echo "Derived both ZiSK program VKs from the reproducible guest ELFs on the high-performance runner."
+            echo ""
+            echo "| Program | ELF SHA-256 | Derived program VK |"
+            echo "|---|---|---|"
+            echo "| inner | \`$inner_elf\` | \`$inner_vk\` |"
+            echo "| aggregator | \`$aggregator_elf\` | \`$aggregator_vk\` |"
+            echo ""
+            echo "Provenance: [workflow run]($RUN_URL) using ZiSK \`$ZISK_VERSION\`."
+            echo ""
+            echo "Downstream server and L1 pins require coordinated updates from the reviewed release manifest."
+          } > "$body"
+
+          existing="$(gh api --method GET "repos/$GITHUB_REPOSITORY/pulls" \
+            -f head="$GITHUB_REPOSITORY_OWNER:$branch" \
+            -f base="$BASE_REF" \
+            -f state=open \
+            --jq '.[0].number // empty')"
+          payload="$RUNNER_TEMP/program-vk-pr.json"
+          if [[ -n "$existing" ]]; then
+            jq -n \
+              --arg title "chore(guest): rotate ZiSK program VK pins" \
+              --rawfile body "$body" \
+              '{title: $title, body: $body}' > "$payload"
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/pulls/$existing" \
+              --input "$payload" >/dev/null
+            pr_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/pull/$existing"
+          else
+            jq -n \
+              --arg title "chore(guest): rotate ZiSK program VK pins" \
+              --arg head "$branch" \
+              --arg base "$BASE_REF" \
+              --rawfile body "$body" \
+              '{title: $title, head: $head, base: $base, body: $body, draft: true}' \
+              > "$payload"
+            pr_url="$(gh api --method POST "repos/$GITHUB_REPOSITORY/pulls" \
+              --input "$payload" --jq .html_url)"
+          fi
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Draft rotation PR: $pr_url" >> "$GITHUB_STEP_SUMMARY"

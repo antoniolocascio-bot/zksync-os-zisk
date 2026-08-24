@@ -73,6 +73,15 @@ record it in `guest/GUEST_PROGRAM_VK` or
 cargo-zisk program-setup -e out/zksync-os-zisk-guest -k ~/.zisk/provingKey
 ```
 
+The manually dispatched `Rotate program VK pins` workflow performs that
+derivation for both reproducible ELFs on the high-performance runner. Its
+`base_ref` must contain the reviewed `GUEST_ELF_SHA256` pins. When either
+program VK differs within the selected `rotation_scope`, the workflow opens a
+draft PR containing the pin changes, derivation provenance, ELF digests,
+canonical VKs, and root limbs. A difference outside that explicit scope fails
+the run. A run with current pins records the same identities in its job summary
+without creating a PR.
+
 ## Release assets
 
 A published GitHub release starts the release-artifacts workflow. The job
@@ -98,7 +107,8 @@ Consumers pin a release tag, verify `SHA256SUMS`, and read the canonical keys
 from `zisk-release.json`. The manifest associates each full ELF hash with the
 program VK derived from that ELF. The release job checks the derived program
 VKs against the two committed `GUEST_PROGRAM_VK` pins before it uploads any
-asset.
+asset. Its job summary presents the ELF digests, canonical VKs, root limbs,
+toolchain version, and era VK hash before the upload step.
 
 [docs/multiprover.md](docs/multiprover.md) covers where each pin then lands
 in the server config and in the L1 verifier.
