@@ -99,6 +99,10 @@ pub struct TxDump {
     /// state change, no gas, no transactions-rolling-hash contribution).
     #[serde(default)]
     pub failed: bool,
+    /// Native tx executed and its top-level run reverted (tx_result is `Ok`
+    /// with `status == false`). The tx IS part of the sealed block.
+    #[serde(default)]
+    pub reverted: bool,
 }
 
 /// One block's dump: the witness plus the native reference commitments.
@@ -467,9 +471,16 @@ fn tracking_run(
 
 /// Recover keccak-keyed deployed code from the dump's blake2s-keyed preimage
 /// store: each 124-byte account blob names its code blob (code ‖ pad ‖
-/// artifacts, stored under blake2s `bytecode_hash`); the raw code is its
-/// `unpadded_code_len` prefix, cross-checked against keccak256 ==
-/// `observable_bytecode_hash`.
+/// artifacts, stored under blake2s `bytecode_hash`); the raw code is the blob
+/// prefix whose keccak256 equals `observable_bytecode_hash`.
+///
+/// `unpadded_code_len` is the fast path: it holds for virtually every account,
+/// but it is not reliable for all (observed off for some upgrade force-deploy
+/// targets, leaving alignment padding in the slice). Since the observable hash
+/// IS `keccak256(unpadded code)`, the code is the unique blob prefix that
+/// hashes to it, so on a fast-path miss we scan prefix lengths to recover
+/// exactly that code. Mirrors the server's
+/// `lib/zisk_witness/src/input_builder/code_recovery.rs`.
 fn derive_codes(preimages: &HashMap<B256, Vec<u8>>) -> BTreeMap<B256, Vec<u8>> {
     let mut codes = BTreeMap::new();
     for blob in preimages.values() {
@@ -485,17 +496,97 @@ fn derive_codes(preimages: &HashMap<B256, Vec<u8>>) -> BTreeMap<B256, Vec<u8>> {
         let Some(code_blob) = preimages.get(&props.bytecode_hash) else {
             continue;
         };
-        let len = props.unpadded_code_len as usize;
-        if code_blob.len() < len {
+        let Some(code) = recover_code_from_blob(&obs, code_blob, props.unpadded_code_len as usize)
+        else {
+            // A dropped entry makes the guest's `code_by_hash` miss and the
+            // deploy silently not happen; never drop one quietly.
+            eprintln!(
+                "WARNING: no prefix of the {}-byte code blob reproduces observable hash {obs} \
+                 (unpadded_code_len = {}); the witness will lack this bytecode",
+                code_blob.len(),
+                props.unpadded_code_len
+            );
             continue;
-        }
-        let code = &code_blob[..len];
-        if keccak256(code) != obs {
-            continue; // not an account-properties blob after all
-        }
-        codes.insert(obs, code.to_vec());
+        };
+        let native_blob = native_preimage_blob(&code);
+        codes.insert(obs, code);
+        // A force-deployed account's deployed code is the declared-length
+        // prefix of the preimage blob (code ‖ padding ‖ artifacts), and the
+        // declared length always equals the blob length (native's preimage
+        // check hashes the truncated form). The guest's deployer reconstructs
+        // and stores that form, so the post-state check looks it up by the
+        // blob's keccak, not the raw code's. Ship both; an extra entry binds
+        // nothing. (Note: the blob is reconstructed from the raw code rather
+        // than taken from the preimage store, because a force-deployed
+        // account's post-state preimage record is a DIFFERENT, longer blob —
+        // code-as-deployed plus ITS artifacts — which is not what the guest
+        // deploys.)
+        codes.insert(keccak256(&native_blob), native_blob);
     }
     codes
+}
+
+/// Blob prefix lengths just below `unpadded_code_len` scanned on a fast-path
+/// miss. The recorded length is only ever off by 32-byte alignment padding, so
+/// the true code prefix sits within this window.
+const ALIGNMENT_WINDOW: usize = 64;
+
+/// Cap on the last-resort prefix scan used only when `unpadded_code_len` gives
+/// no usable anchor. Bounds the worst-case hashing cost on large blobs.
+const MAX_ANCHORLESS_SCAN: usize = 8 * 1024;
+
+/// Recover the raw EVM code whose `keccak256` equals `obs` from a blake2s
+/// preimage blob (`code ‖ padding ‖ jumpdest-artifacts`). `None` if no prefix
+/// matches within the bounds.
+/// Native's bytecode preimage layout: the code, zero padding to u64
+/// alignment, then the jumpdest bitmap (one bit per code byte, LSB-first in
+/// u64 words, push-immediate bytes skipped). Must produce the same bytes as
+/// the guest deployer's reconstruction — they are two copies of native's
+/// layout by design.
+fn native_preimage_blob(code: &[u8]) -> Vec<u8> {
+    let mut blob = code.to_vec();
+    let padding = (8 - code.len() % 8) % 8;
+    blob.extend(std::iter::repeat(0).take(padding));
+    let mut bitmap = vec![0u64; code.len().div_ceil(64).max(1)];
+    let mut i = 0;
+    while i < code.len() {
+        let op = code[i];
+        if op == 0x5b {
+            bitmap[i / 64] |= 1u64 << (i % 64);
+        }
+        i += if (0x60..=0x7f).contains(&op) { (op - 0x5f) as usize + 1 } else { 1 };
+    }
+    for word in bitmap {
+        blob.extend_from_slice(&word.to_le_bytes());
+    }
+    blob
+}
+
+fn recover_code_from_blob(obs: &B256, blob: &[u8], unpadded_code_len: usize) -> Option<Vec<u8>> {
+    let matches = |n: usize| n <= blob.len() && keccak256(&blob[..n]) == *obs;
+
+    // Fast path: the recorded unpadded length. Holds for virtually every account.
+    if unpadded_code_len > 0 && matches(unpadded_code_len) {
+        return Some(blob[..unpadded_code_len].to_vec());
+    }
+
+    if unpadded_code_len > 0 {
+        // Recorded length off by alignment padding: the true prefix is just
+        // below it.
+        let lo = unpadded_code_len.saturating_sub(ALIGNMENT_WINDOW).max(1);
+        for n in (lo..unpadded_code_len).rev() {
+            if matches(n) {
+                return Some(blob[..n].to_vec());
+            }
+        }
+        return None;
+    }
+
+    // No usable anchor (recorded length is zero): bounded last-resort scan.
+    let scan_upper = blob.len().min(MAX_ANCHORLESS_SCAN);
+    (1..=scan_upper)
+        .find(|&n| matches(n))
+        .map(|n| blob[..n].to_vec())
 }
 
 fn build_storage_proofs(
@@ -805,7 +896,12 @@ pub fn build_batch_input(d: &StateDumpBundle, header_hash_check: HeaderHashCheck
             .map(|t| TxInput {
                 chain_id: Some(d.chain_id),
                 gas_used_override: Some(t.gas_used),
-                force_fail: false,
+                // A natively reverted tx is force-failed in the guest: the
+                // guest cannot reproduce every native failure class (e.g. the
+                // settlement-time out-of-gas when the native-resource charge
+                // exceeds the gas limit), and the write-set equality plus the
+                // receipt pin keep the flag honest.
+                force_fail: t.reverted,
                 auth: TxAuth::L2 {
                     signed_bytes: hbytes(&t.signed),
                 },

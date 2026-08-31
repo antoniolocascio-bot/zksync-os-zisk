@@ -170,6 +170,8 @@ fn run_execution_and_commit(
     // the execution journal as well: it decides which code encoding native
     // wrote for an account that ends the batch holding no code.
     let mut deployed_accounts: HashSet<revm::primitives::Address> = HashSet::new();
+    let mut force_deployed_observable_hashes: HashMap<revm::primitives::Address, revm::primitives::B256> =
+        HashMap::new();
     // EIP-7825 caps a transaction's own gas limit from AtlasV4 on. AtlasV1
     // through AtlasV3 bound an L2 transaction by the block gas limit alone, so
     // the chain-config cap stays off for them: an in-guest rejection that
@@ -193,6 +195,7 @@ fn run_execution_and_commit(
         storage_writes.extend(state_effects.storage_writes);
         destroyed_accounts.extend(state_effects.destroyed_accounts);
         deployed_accounts.extend(state_effects.deployed_accounts);
+        force_deployed_observable_hashes.extend(state_effects.force_deployed_observable_hashes);
     }
 
     let output = BatchOutput { chain_id: input.chain_id, block_results };
@@ -208,6 +211,7 @@ fn run_execution_and_commit(
         &cache_db,
         &meta.account_preimages_after,
         !meta.upgrade_tx_hash.is_zero(),
+        &force_deployed_observable_hashes,
     );
     let (tree_root_after, new_leaf_count) = verify::verify_tree_update(meta, &revm_writes);
 

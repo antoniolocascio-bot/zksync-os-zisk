@@ -71,6 +71,7 @@ fn expected_code_fields(
     addr: &Address,
     code_hash: B256,
     deployed_in_batch: bool,
+    force_deployed_observable_hash: Option<B256>,
 ) -> account_props::CodeFields {
     // REVM reports `KECCAK_EMPTY` for an account that holds no code, and its
     // own `AccountInfo::is_empty` reads the zero hash the same way, so both
@@ -95,7 +96,17 @@ fn expected_code_fields(
         .code_by_hash_ref(code_hash)
         .unwrap_or_else(|e| panic!("post-state code {code_hash} for {addr} unavailable: {e}"))
         .original_bytes();
-    account_props::evm_code_fields(&code)
+    let mut fields = account_props::evm_code_fields(&code);
+    // Native records the observable bytecode hash a force-deploy declares in
+    // its calldata, verbatim — never recomputed from the deployed code
+    // (`system_hooks/.../contract_deployer_temp.rs`). The declared value is
+    // execution-derived (the deployer precompile recorded it from
+    // statement-bound calldata), so taking it does not open a witness-side
+    // forgery channel.
+    if let Some(observable_bytecode_hash) = force_deployed_observable_hash {
+        fields.observable_bytecode_hash = observable_bytecode_hash;
+    }
+    fields
 }
 
 /// Build the complete write map: flat_key → new_value for both regular storage
@@ -109,6 +120,7 @@ pub(super) fn build_revm_write_map(
     cache_db: &CacheDB<ProvenDB>,
     after_preimages: &[(Address, Vec<u8>)],
     is_upgrade_batch: bool,
+    force_deployed_observable_hashes: &HashMap<Address, B256>,
 ) -> HashMap<B256, B256> {
     let proven_db = &cache_db.db;
     let after_map: HashMap<&Address, &Vec<u8>> = after_preimages.iter()
@@ -173,6 +185,7 @@ pub(super) fn build_revm_write_map(
                         addr,
                         info.code_hash,
                         deployed_accounts.contains(addr),
+                        force_deployed_observable_hashes.get(addr).copied(),
                     ),
                     "after-preimage code fields mismatch for {addr}"
                 );
@@ -180,11 +193,29 @@ pub(super) fn build_revm_write_map(
             // A destroyed account has exactly one legal post-state, so the
             // preimage is pinned whole rather than field by field: any other
             // content leaves value alive in an account execution emptied.
-            PostState::Destroyed => assert!(
-                account_props::is_zeroed_account(&props),
-                "after-preimage for destroyed account {addr} is not the zeroed \
-                 account leaf: destruction writes nonce 0, balance 0, and no code"
-            ),
+            // Native omits the zeroed leaf of an account created and destroyed
+            // inside the batch (EIP-6780): nothing pre-existed to empty, so no
+            // tree write exists for it, and an after-preimage for one is an
+            // injection.
+            PostState::Destroyed => {
+                // Native omits the zeroed leaf of an account created and
+                // destroyed inside the batch (EIP-6780): nothing pre-existed to
+                // empty, so no tree write exists for it. The discriminator is
+                // existence in the authenticated pre-state, not the account's
+                // values — a pre-existing account that is empty-but-present
+                // (zero nonce/balance, e.g. with code) is legitimately emptied.
+                let existed_before = proven_db.basic_ref(*addr).ok().flatten().is_some();
+                assert!(
+                    existed_before,
+                    "after-preimage for account {addr} created and destroyed inside \
+                     the batch: native records no leaf for it"
+                );
+                assert!(
+                    account_props::is_zeroed_account(&props),
+                    "after-preimage for destroyed account {addr} is not the zeroed \
+                     account leaf: destruction writes nonce 0, balance 0, and no code"
+                );
+            }
             // A system force-deploy changes an account REVM never executed, so
             // there is no post-state to derive the fields from. It is the
             // documented trusted hole of an upgrade batch: the fields rest on
@@ -593,6 +624,7 @@ mod tests {
             &cache_db,
             &[(addr, zeroed_account_blob())],
             false,
+            &HashMap::new(),
         );
 
         let key = merkle::derive_account_properties_key(&addr.into_array());
@@ -621,6 +653,7 @@ mod tests {
             &cache_db,
             &[(addr, zeroed_account_blob())],
             false,
+            &HashMap::new(),
         );
 
         let key = merkle::derive_account_properties_key(&addr.into_array());
@@ -652,18 +685,26 @@ mod tests {
             &cache_db,
             &[(addr, zeroed_account_blob())],
             false,
+            &HashMap::new(),
         );
     }
 
     /// Admitting destroyed accounts must not admit their CONTENT: a destroyed
     /// account has one legal post-state, so a preimage that keeps a balance
-    /// alive in it is rejected.
+    /// alive in it is rejected. The pre-state holds a balance so the account
+    /// is one destruction legitimately empties, not a same-batch
+    /// create+destroy (native records no leaf for those at all).
     #[test]
     #[should_panic(expected = "is not the zeroed account leaf")]
     fn rejects_non_zeroed_preimage_for_destroyed_account() {
         let addr = Address::repeat_byte(0x33);
-        let cache_db =
-            cache_db_with(vec![], vec![(addr, DbAccount::new_not_existing())], HashMap::new());
+        let mut pre_blob = zeroed_account_blob();
+        pre_blob[47] = 1; // the account held 1 wei before destruction
+        let cache_db = cache_db_with(
+            vec![(addr, pre_blob)],
+            vec![(addr, DbAccount::new_not_existing())],
+            HashMap::new(),
+        );
 
         let mut blob = zeroed_account_blob();
         blob[47] = 1; // balance = 1 wei
@@ -675,6 +716,7 @@ mod tests {
             &cache_db,
             &[(addr, blob)],
             false,
+            &HashMap::new(),
         );
     }
 
@@ -713,6 +755,7 @@ mod tests {
             &cache_db,
             &[(addr, account_blob(&fields, 1, U256::ZERO))],
             false,
+            &HashMap::new(),
         );
     }
 
@@ -747,6 +790,7 @@ mod tests {
                 account_blob(&account_props::evm_code_fields(&runtime_code), 0, U256::from(2)),
             )],
             false,
+            &HashMap::new(),
         );
     }
 
@@ -778,6 +822,7 @@ mod tests {
                 account_blob(&account_props::evm_code_fields(&[]), 0, U256::from(2)),
             )],
             false,
+            &HashMap::new(),
         );
     }
 
@@ -807,6 +852,7 @@ mod tests {
                 account_blob(&account_props::CodeFields::empty(), 1, U256::from(2)),
             )],
             false,
+            &HashMap::new(),
         );
     }
 
@@ -878,6 +924,7 @@ mod tests {
             &cache_db,
             &after_preimages,
             false,
+            &HashMap::new(),
         );
 
         let expected: HashMap<B256, B256> = after_preimages

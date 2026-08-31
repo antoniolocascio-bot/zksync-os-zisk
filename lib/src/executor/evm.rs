@@ -3,13 +3,14 @@
 //! Runs a block's transactions through REVM, collects results and L2→L1 logs,
 //! and verifies the computed block header hash.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use revm::database::CacheDB;
 use revm::primitives::{B256, U256};
 use revm::{DatabaseRef, ExecuteCommitEvm, ExecuteEvm};
 use revm::primitives::Address;
 use zksync_os_revm::{zk_context, ZkBuilder, ZkSpecId};
+use zksync_os_revm::force_deploy::ForceDeployRecorder;
 
 use super::eip2935;
 use crate::block_header;
@@ -47,6 +48,12 @@ pub(super) struct BlockStateEffects {
     /// completed deployment, so these accounts carry the deployed code
     /// encoding even when the deployed runtime code is empty.
     pub(super) deployed_accounts: HashSet<Address>,
+    /// Accounts force-deployed by the deployer precompile in this block, with
+    /// the observable bytecode hash the call declared. Native records that
+    /// value verbatim in the account properties, so the field pin for these
+    /// accounts takes the declared hash rather than deriving it from the code.
+    /// The last declaration of an address wins, matching its final state.
+    pub(super) force_deployed_observable_hashes: HashMap<Address, B256>,
 }
 
 /// Execute a single block using the shared batch-level CacheDB.
@@ -243,6 +250,7 @@ where
         std::collections::HashMap::new();
     let mut destroyed_accounts: HashSet<Address> = HashSet::new();
     let mut deployed_accounts: HashSet<Address> = HashSet::new();
+    let mut force_deployed_observable_hashes: HashMap<Address, B256> = HashMap::new();
 
     for (tx_idx, tx_input) in block.transactions.iter().enumerate() {
         evm.0.ctx.journaled_state.set_tx_number(tx_idx as u16);
@@ -296,6 +304,9 @@ where
                 }
                 let result = result_and_state.result.clone();
                 evm.commit(result_and_state.state);
+                for (addr, obs) in evm.0.ctx.journaled_state.take_force_deploys() {
+                    force_deployed_observable_hashes.insert(addr, obs);
+                }
                 for log in evm.0.ctx.journaled_state.take_l2_to_l1_logs() {
                     l2_to_l1_logs.push(L2ToL1LogEntry {
                         l2_shard_id: log.l2_shard_id,
@@ -340,6 +351,7 @@ where
             storage_writes,
             destroyed_accounts,
             deployed_accounts,
+            force_deployed_observable_hashes,
         },
     }
 }

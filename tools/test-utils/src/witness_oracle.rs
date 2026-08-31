@@ -314,8 +314,18 @@ fn commit(input: &BatchInput) -> Result<B256, String> {
 /// The oracles a sweep runs. A new case is one implementation of
 /// [`WitnessOracle`] and one line here.
 pub fn oracles() -> Vec<Box<dyn WitnessOracle>> {
-    vec![Box::new(Honest), Box::new(UnboundL2ToL1Logs)]
+    let mut all: Vec<Box<dyn WitnessOracle>> = vec![Box::new(Honest), Box::new(UnboundL2ToL1Logs)];
+    all.extend(metadata::oracles());
+    all.extend(preimages::oracles());
+    all.extend(proofs::oracles());
+    all
 }
+
+/// Campaign oracle axes. Each module is owned by one campaign agent, so
+/// parallel agents never edit the same file.
+pub mod metadata;
+pub mod preimages;
+pub mod proofs;
 
 /// The identity.
 ///
